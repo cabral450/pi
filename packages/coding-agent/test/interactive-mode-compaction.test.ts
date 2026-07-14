@@ -2,7 +2,7 @@ import { describe, expect, test, vi } from "vitest";
 import { InteractiveMode } from "../src/modes/interactive/interactive-mode.ts";
 
 describe("InteractiveMode compaction events", () => {
-	test("rebuilds chat and appends a synthetic compaction summary at the bottom", async () => {
+	test("keeps visible scrollback and appends a synthetic compaction summary at the bottom", async () => {
 		const fakeThis = {
 			isInitialized: true,
 			footer: { invalidate: vi.fn() },
@@ -12,6 +12,7 @@ describe("InteractiveMode compaction events", () => {
 			statusContainer: { clear: vi.fn() },
 			chatContainer: { clear: vi.fn() },
 			rebuildChatFromMessages: vi.fn(),
+			rebuildEditorPromptHistoryFromBranch: vi.fn(),
 			addMessageToChat: vi.fn(),
 			showError: vi.fn(),
 			showStatus: vi.fn(),
@@ -44,8 +45,11 @@ describe("InteractiveMode compaction events", () => {
 			willRetry: false,
 		});
 
-		expect(fakeThis.chatContainer.clear).toHaveBeenCalledTimes(1);
-		expect(fakeThis.rebuildChatFromMessages).toHaveBeenCalledTimes(1);
+		expect(fakeThis.chatContainer.clear).not.toHaveBeenCalled();
+		expect(fakeThis.rebuildChatFromMessages).not.toHaveBeenCalled();
+		expect(fakeThis.rebuildEditorPromptHistoryFromBranch).toHaveBeenCalledWith(undefined, {
+			preserveCurrent: true,
+		});
 		expect(fakeThis.addMessageToChat).toHaveBeenCalledTimes(1);
 		expect(fakeThis.addMessageToChat).toHaveBeenCalledWith(
 			expect.objectContaining({

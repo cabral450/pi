@@ -1,9 +1,10 @@
 import { Box, Container, Markdown, type MarkdownTheme } from "@earendil-works/pi-tui";
 import { getMarkdownTheme, theme } from "../theme/theme.ts";
 
-const OSC133_ZONE_START = "\x1b]133;A\x07";
-const OSC133_ZONE_END = "\x1b]133;B\x07";
-const OSC133_ZONE_FINAL = "\x1b]133;C\x07";
+// Disabled: some terminals misinterpret OSC 133 prompt markers as title changes.
+const OSC133_ZONE_START = "";
+const OSC133_ZONE_END = "";
+const OSC133_ZONE_FINAL = "";
 
 /**
  * Component that renders a user message

@@ -162,7 +162,7 @@ export type ThemeBg =
 	| "toolSuccessBg"
 	| "toolErrorBg";
 
-type ColorMode = "truecolor" | "256color";
+type ColorMode = "truecolor" | "256color" | "ansi16";
 
 // ============================================================================
 // Color Utilities
@@ -260,8 +260,129 @@ function hexTo256(hex: string): number {
 	return rgbTo256(r, g, b);
 }
 
+const ANSI16_RGB = [
+	{ r: 0, g: 0, b: 0 },
+	{ r: 128, g: 0, b: 0 },
+	{ r: 0, g: 128, b: 0 },
+	{ r: 128, g: 128, b: 0 },
+	{ r: 0, g: 0, b: 128 },
+	{ r: 128, g: 0, b: 128 },
+	{ r: 0, g: 128, b: 128 },
+	{ r: 192, g: 192, b: 192 },
+	{ r: 128, g: 128, b: 128 },
+	{ r: 255, g: 0, b: 0 },
+	{ r: 0, g: 255, b: 0 },
+	{ r: 255, g: 255, b: 0 },
+	{ r: 0, g: 0, b: 255 },
+	{ r: 255, g: 0, b: 255 },
+	{ r: 0, g: 255, b: 255 },
+	{ r: 255, g: 255, b: 255 },
+] as const;
+
+function ansi256ToRgb(index: number): { r: number; g: number; b: number } {
+	const clamped = Math.max(0, Math.min(255, index));
+	if (clamped < 16) {
+		return ANSI16_RGB[clamped]!;
+	}
+	if (clamped < 232) {
+		const cubeIndex = clamped - 16;
+		const r = Math.floor(cubeIndex / 36);
+		const g = Math.floor((cubeIndex % 36) / 6);
+		const b = cubeIndex % 6;
+		const channel = (value: number) => (value === 0 ? 0 : 55 + value * 40);
+		return { r: channel(r), g: channel(g), b: channel(b) };
+	}
+	const gray = 8 + (clamped - 232) * 10;
+	return { r: gray, g: gray, b: gray };
+}
+
+function rgbToAnsi16(r: number, g: number, b: number): number {
+	let minDist = Infinity;
+	let minIdx = 0;
+	for (let i = 0; i < ANSI16_RGB.length; i++) {
+		const candidate = ANSI16_RGB[i]!;
+		const dist = colorDistance(r, g, b, candidate.r, candidate.g, candidate.b);
+		if (dist < minDist) {
+			minDist = dist;
+			minIdx = i;
+		}
+	}
+	return minIdx;
+}
+
+function colorToAnsi16Index(color: string | number): number {
+	if (typeof color === "number") {
+		if (color < 16) {
+			return color;
+		}
+		const { r, g, b } = ansi256ToRgb(color);
+		return rgbToAnsi16(r, g, b);
+	}
+	if (color.startsWith("#")) {
+		const { r, g, b } = hexToRgb(color);
+		return rgbToAnsi16(r, g, b);
+	}
+	throw new Error(`Invalid color value: ${color}`);
+}
+
+function fgAnsi16(index: number): string {
+	return index < 8 ? `\x1b[3${index}m` : `\x1b[9${index - 8}m`;
+}
+
+function bgAnsi16(index: number): string {
+	return index < 8 ? `\x1b[4${index}m` : `\x1b[10${index - 8}m`;
+}
+
+function normalizeColorMode(value: string | undefined): ColorMode | undefined {
+	const mode = value?.toLowerCase();
+	if (mode === "truecolor" || mode === "24bit" || mode === "24-bit" || mode === "16m") {
+		return "truecolor";
+	}
+	if (mode === "256color" || mode === "256" || mode === "8bit" || mode === "8-bit") {
+		return "256color";
+	}
+	if (mode === "ansi16" || mode === "16color" || mode === "16-color" || mode === "ansi") {
+		return "ansi16";
+	}
+	return undefined;
+}
+
+function isScreenLikeTerm(term: string): boolean {
+	return term === "screen" || term.startsWith("screen-") || term.startsWith("screen.");
+}
+
+function isTmuxLikeTerm(term: string): boolean {
+	return term === "tmux" || term.startsWith("tmux-");
+}
+
+function detectColorMode(): ColorMode {
+	const forcedMode = normalizeColorMode(process.env.PI_COLOR_MODE);
+	if (forcedMode) {
+		return forcedMode;
+	}
+	const term = process.env.TERM || "";
+	// Fall back to broadly supported ANSI colors for truly limited terminals.
+	if (term === "dumb" || term === "" || term === "linux") {
+		return "ansi16";
+	}
+	const inScreen = Boolean(process.env.STY) || isScreenLikeTerm(term);
+	const inTmux = Boolean(process.env.TMUX) || isTmuxLikeTerm(term);
+	// Multiplexers often inherit COLORTERM=truecolor from the outer terminal even
+	// when the multiplexer itself is not configured for direct color. Prefer the
+	// capability advertised by TERM, with PI_COLOR_MODE available as an explicit
+	// override for truecolor-capable screen/tmux setups.
+	if (inScreen || inTmux) {
+		if (term.includes("direct") || term.includes("truecolor") || term.includes("24bit")) {
+			return "truecolor";
+		}
+		return term.includes("256color") ? "256color" : "ansi16";
+	}
+	return getCapabilities().trueColor ? "truecolor" : "256color";
+}
+
 function fgAnsi(color: string | number, mode: ColorMode): string {
 	if (color === "") return "\x1b[39m";
+	if (mode === "ansi16") return fgAnsi16(colorToAnsi16Index(color));
 	if (typeof color === "number") return `\x1b[38;5;${color}m`;
 	if (color.startsWith("#")) {
 		if (mode === "truecolor") {
@@ -277,6 +398,7 @@ function fgAnsi(color: string | number, mode: ColorMode): string {
 
 function bgAnsi(color: string | number, mode: ColorMode): string {
 	if (color === "") return "\x1b[49m";
+	if (mode === "ansi16") return bgAnsi16(colorToAnsi16Index(color));
 	if (typeof color === "number") return `\x1b[48;5;${color}m`;
 	if (color.startsWith("#")) {
 		if (mode === "truecolor") {
@@ -595,7 +717,7 @@ function loadThemeJson(name: string): ThemeJson {
 }
 
 function createTheme(themeJson: ThemeJson, mode?: ColorMode, sourcePath?: string): Theme {
-	const colorMode = mode ?? (getCapabilities().trueColor ? "truecolor" : "256color");
+	const colorMode = mode ?? detectColorMode();
 	const resolvedColors = resolveThemeColors(withThemeColorFallbacks(themeJson.colors), themeJson.vars);
 	const fgColors: Record<ThemeColor, string | number> = {} as Record<ThemeColor, string | number>;
 	const bgColors: Record<ThemeBg, string | number> = {} as Record<ThemeBg, string | number>;

@@ -50,12 +50,18 @@ describe("syntax highlight renderer", () => {
 });
 
 describe("theme syntax highlighting", () => {
+	let previousColorMode: string | undefined;
+
 	beforeEach(() => {
+		previousColorMode = process.env.PI_COLOR_MODE;
+		process.env.PI_COLOR_MODE = "truecolor";
 		setCapabilities({ images: null, trueColor: true, hyperlinks: false });
 		initTheme("dark");
 	});
 
 	afterEach(() => {
+		if (previousColorMode === undefined) delete process.env.PI_COLOR_MODE;
+		else process.env.PI_COLOR_MODE = previousColorMode;
 		resetCapabilitiesCache();
 	});
 

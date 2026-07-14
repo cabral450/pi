@@ -33,15 +33,17 @@ function createAssistantMessage(
 }
 
 describe("AssistantMessageComponent", () => {
-	test("adds OSC 133 zone markers to assistant messages without tool calls", () => {
+	test("does not add OSC 133 zone markers to assistant messages", () => {
 		initTheme("dark");
 
 		const component = new AssistantMessageComponent(createAssistantMessage([{ type: "text", text: "hello" }]));
 		const lines = component.render(40);
 
 		expect(lines).not.toHaveLength(0);
-		expect(lines[0]).toContain(OSC133_ZONE_START);
-		expect(lines[lines.length - 1].startsWith(OSC133_ZONE_END + OSC133_ZONE_FINAL)).toBe(true);
+		expect(lines.join("\n")).not.toContain(OSC133_ZONE_START);
+		expect(lines.join("\n")).not.toContain(OSC133_ZONE_END);
+		expect(lines.join("\n")).not.toContain(OSC133_ZONE_FINAL);
+		expect(component.hasVisibleAnswer()).toBe(true);
 	});
 
 	test("does not add OSC 133 zone markers when assistant message contains tool calls", () => {
