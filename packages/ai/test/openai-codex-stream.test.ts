@@ -381,6 +381,57 @@ describe("openai-codex streaming", () => {
 		expect(result.errorMessage).toBe("Codex SSE response headers timed out after 10ms");
 	});
 
+	it("records a safe nested cause code for SSE fetch failures", async () => {
+		const token = mockToken();
+		const cause = Object.assign(new Error("private network endpoint details"), { code: "ECONNRESET" });
+		const fetchError = new TypeError("fetch failed") as TypeError & { cause?: unknown };
+		fetchError.cause = cause;
+		vi.stubGlobal(
+			"fetch",
+			vi.fn(async () => {
+				throw fetchError;
+			}),
+		);
+
+		const model: Model<"openai-codex-responses"> = {
+			id: "gpt-5.1-codex",
+			name: "GPT-5.1 Codex",
+			api: "openai-codex-responses",
+			provider: "openai-codex",
+			baseUrl: "https://chatgpt.com/backend-api",
+			reasoning: true,
+			input: ["text"],
+			cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+			contextWindow: 400000,
+			maxTokens: 128000,
+		};
+		const context: Context = {
+			systemPrompt: "You are a helpful assistant.",
+			messages: [{ role: "user", content: "Say hello", timestamp: Date.now() }],
+		};
+
+		const result = await streamOpenAICodexResponses(model, context, {
+			apiKey: token,
+			transport: "sse",
+		}).result();
+
+		expect(result.stopReason).toBe("error");
+		expect(result.errorMessage).toBe("fetch failed");
+		expect(result.diagnostics).toHaveLength(1);
+		expect(result.diagnostics?.[0]).toMatchObject({
+			type: "provider_transport_failure",
+			error: { name: "TypeError", message: "fetch failed", causeCode: "ECONNRESET" },
+			details: {
+				configuredTransport: "sse",
+				transport: "sse",
+				eventsEmitted: false,
+				phase: "before_response_headers",
+				attempt: 1,
+			},
+		});
+		expect(JSON.stringify(result.diagnostics)).not.toContain("private network endpoint details");
+	});
+
 	it("aborts SSE body reads after response headers arrive", async () => {
 		const token = mockToken();
 		const encoder = new TextEncoder();

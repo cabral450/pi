@@ -371,6 +371,19 @@ export const stream: StreamFunction<"openai-codex-responses", OpenAICodexRespons
 						if (headerTimeoutSignal?.aborted && !options?.signal?.aborted) {
 							throw new Error(`Codex SSE response headers timed out after ${httpTimeoutMs}ms`);
 						}
+						if (!options?.signal?.aborted) {
+							appendAssistantMessageDiagnostic(
+								output,
+								createAssistantMessageDiagnostic("provider_transport_failure", error, {
+									configuredTransport: transport,
+									transport: "sse",
+									eventsEmitted: false,
+									phase: "before_response_headers",
+									attempt: attempt + 1,
+									requestBytes: new TextEncoder().encode(bodyJson).byteLength,
+								}),
+							);
+						}
 						throw error;
 					} finally {
 						combinedSignal.cleanup();

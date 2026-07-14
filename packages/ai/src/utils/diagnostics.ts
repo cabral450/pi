@@ -3,6 +3,8 @@ export interface DiagnosticErrorInfo {
 	message: string;
 	stack?: string;
 	code?: string | number;
+	/** Validated identifier/number from the immediate Error.cause; cause text is never copied. */
+	causeCode?: string | number;
 }
 
 export interface AssistantMessageDiagnostic {
@@ -18,6 +20,15 @@ export function formatThrownValue(value: unknown): string {
 	return String(value);
 }
 
+function safeNestedCauseCode(error: Error): string | number | undefined {
+	const cause = (error as Error & { cause?: unknown }).cause;
+	if (!cause || typeof cause !== "object") return undefined;
+	const code = (cause as { code?: unknown }).code;
+	if (typeof code === "number" && Number.isSafeInteger(code)) return code;
+	if (typeof code === "string" && /^[A-Z][A-Z0-9_]{0,63}$/.test(code)) return code;
+	return undefined;
+}
+
 export function extractDiagnosticError(error: unknown): DiagnosticErrorInfo {
 	if (!(error instanceof Error)) return { name: "ThrownValue", message: formatThrownValue(error) };
 	const code = (error as Error & { code?: unknown }).code;
@@ -26,6 +37,7 @@ export function extractDiagnosticError(error: unknown): DiagnosticErrorInfo {
 		message: error.message || error.name,
 		stack: error.stack,
 		code: typeof code === "string" || typeof code === "number" ? code : undefined,
+		causeCode: safeNestedCauseCode(error),
 	};
 }
 
