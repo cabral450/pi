@@ -107,6 +107,8 @@ export {
 	type OverlayMargin,
 	type OverlayOptions,
 	type OverlayUnfocusOptions,
+	type ResizeRedrawContext,
+	type ResizeRedrawProvider,
 	type SizeValue,
 	TUI,
 } from "./tui.ts";

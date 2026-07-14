@@ -89,6 +89,19 @@ export interface Component {
 
 type InputListenerResult = { consume?: boolean; data?: string } | undefined;
 type InputListener = (data: string) => InputListenerResult;
+
+export interface ResizeRedrawContext {
+	lines: readonly string[];
+	width: number;
+	height: number;
+	widthChanged: boolean;
+	heightChanged: boolean;
+	viewportTop: number;
+	hasOverlays: boolean;
+}
+
+export type ResizeRedrawProvider = (context: ResizeRedrawContext) => number | undefined;
+
 type PendingOsc11BackgroundQuery = {
 	settled: boolean;
 	resolve: ((rgb: RgbColor | undefined) => void) | undefined;
@@ -314,6 +327,9 @@ export class TUI extends Container {
 	private maxLinesRendered = 0; // Track terminal's working area (max lines ever rendered)
 	private previousViewportTop = 0; // Track previous viewport top for resize-aware cursor moves
 	private fullRedrawCount = 0;
+	// Optional embedding hook: return a logical line index before the viewport
+	// to replay a longer suffix on terminal resize while preserving the final viewport.
+	private resizeRedrawProvider: ResizeRedrawProvider | undefined;
 	private stopped = false;
 	private pendingOsc11BackgroundReplies = 0;
 	private pendingOsc11BackgroundQueries: PendingOsc11BackgroundQuery[] = [];
@@ -361,6 +377,10 @@ export class TUI extends Container {
 	 */
 	setClearOnShrink(enabled: boolean): void {
 		this.clearOnShrink = enabled;
+	}
+
+	setResizeRedrawProvider(provider: ResizeRedrawProvider | undefined): void {
+		this.resizeRedrawProvider = provider;
 	}
 
 	setFocus(component: Component | null): void {
@@ -1280,19 +1300,12 @@ export class TUI extends Container {
 
 		newLines = this.applyLineResets(newLines);
 
-		// Helper to clear scrollback and viewport and render all new lines
-		const fullRender = (clear: boolean): void => {
-			this.fullRedrawCount += 1;
-			let buffer = "\x1b[?2026h"; // Begin synchronized output
-			if (clear) {
-				buffer += this.deleteKittyImages(this.previousKittyImageIds);
-				buffer += "\x1b[2J\x1b[H\x1b[3J"; // Clear screen, home, then clear scrollback
-			}
-			for (let i = 0; i < newLines.length; i++) {
+		const writeLinesWithImages = (buffer: string, lines: string[]): string => {
+			for (let i = 0; i < lines.length; i++) {
 				if (i > 0) buffer += "\r\n";
-				const line = newLines[i];
+				const line = lines[i]!;
 				const isImage = isImageLine(line);
-				const imageReservedRows = isImage ? this.getKittyImageReservedRows(newLines, i) : 1;
+				const imageReservedRows = isImage ? this.getKittyImageReservedRows(lines, i) : 1;
 				if (imageReservedRows > 1 && imageReservedRows <= height) {
 					for (let row = 1; row < imageReservedRows; row++) {
 						buffer += "\r\n";
@@ -1305,8 +1318,10 @@ export class TUI extends Container {
 				}
 				buffer += line;
 			}
-			buffer += "\x1b[?2026l"; // End synchronized output
-			this.terminal.write(buffer);
+			return buffer;
+		};
+
+		const commitRedrawState = (clear: boolean): void => {
 			this.cursorRow = Math.max(0, newLines.length - 1);
 			this.hardwareCursorRow = this.cursorRow;
 			// Reset max lines when clearing, otherwise track growth
@@ -1324,6 +1339,87 @@ export class TUI extends Container {
 			this.previousHeight = height;
 		};
 
+		// Helper to clear scrollback and viewport and render all new lines
+		const fullRender = (clear: boolean): void => {
+			this.fullRedrawCount += 1;
+			let buffer = "\x1b[?2026h"; // Begin synchronized output
+			if (clear) {
+				buffer += this.deleteKittyImages(this.previousKittyImageIds);
+				buffer += "\x1b[2J\x1b[H\x1b[3J"; // Clear screen, home, then clear scrollback
+			}
+			buffer = writeLinesWithImages(buffer, newLines);
+			buffer += "\x1b[?2026l"; // End synchronized output
+			this.terminal.write(buffer);
+			commitRedrawState(clear);
+		};
+
+		// Repaint only the visible viewport on terminal resize. Replaying every
+		// logical chat line recreates scrollback by visibly scrolling through the
+		// whole conversation on terminals that do not honor synchronized output.
+		const renderVisibleViewport = (): void => {
+			this.fullRedrawCount += 1;
+			const bufferLength = Math.max(height, newLines.length);
+			let nextViewportTop = Math.max(0, bufferLength - height);
+			let visibleStart = nextViewportTop;
+			// If the viewport starts inside rows reserved by a Kitty image, include
+			// the placement line so the visible reserved rows are repainted too.
+			for (let i = 0; i < nextViewportTop; i++) {
+				const line = newLines[i]!;
+				if (!isImageLine(line)) continue;
+				const blockEnd = i + this.getKittyImageReservedRows(newLines, i) - 1;
+				if (blockEnd >= nextViewportTop) {
+					visibleStart = i;
+				}
+			}
+			let visibleLines = newLines.slice(visibleStart, nextViewportTop + height);
+			if (this.resizeRedrawProvider) {
+				try {
+					const requestedStart = this.resizeRedrawProvider({
+						lines: newLines,
+						width,
+						height,
+						widthChanged,
+						heightChanged,
+						viewportTop: nextViewportTop,
+						hasOverlays: this.overlayStack.some((entry) => this.isOverlayVisible(entry)),
+					});
+					if (
+						requestedStart !== undefined &&
+						Number.isInteger(requestedStart) &&
+						requestedStart >= 0 &&
+						requestedStart < newLines.length &&
+						newLines.length - requestedStart > height
+					) {
+						// Replay a suffix ending at the same logical bottom. If the suffix is
+						// taller than the viewport, the terminal scrolls to the same final
+						// screen while keeping the replayed content contiguous in scrollback.
+						visibleLines = newLines.slice(requestedStart);
+					}
+				} catch {
+					// Resize repaint should never fail because an embedding hook failed.
+				}
+			}
+			let buffer = "\x1b[?2026h"; // Begin synchronized output
+			buffer += this.deleteKittyImages(this.previousKittyImageIds);
+			buffer += "\x1b[2J\x1b[H"; // Clear visible viewport and move home; keep existing scrollback.
+			// Bottom-anchor short active buffers so resizing a tall terminal does not
+			// pin the conversation to the top and erase visible scrollback below it.
+			const padRows = height - visibleLines.length;
+			if (padRows > 0 && visibleLines.length > 0) {
+				buffer += "\n".repeat(padRows);
+				nextViewportTop = -padRows;
+			}
+			buffer = writeLinesWithImages(buffer, visibleLines);
+			buffer += "\x1b[?2026l"; // End synchronized output
+			this.terminal.write(buffer);
+			commitRedrawState(true);
+			// commitRedrawState clamps previousViewportTop to >= 0; restore the
+			// padding model so subsequent differential renders target padded rows.
+			if (nextViewportTop < 0) {
+				this.previousViewportTop = nextViewportTop;
+			}
+		};
+
 		const debugRedraw = process.env.PI_DEBUG_REDRAW === "1";
 		const logRedraw = (reason: string): void => {
 			if (!debugRedraw) return;
@@ -1339,19 +1435,21 @@ export class TUI extends Container {
 			return;
 		}
 
-		// Width changes always need a full re-render because wrapping changes.
+		// Width changes require re-rendering component lines because wrapping changes,
+		// but only the visible terminal viewport needs to be repainted.
 		if (widthChanged) {
 			logRedraw(`terminal width changed (${this.previousWidth} -> ${width})`);
-			fullRender(true);
+			renderVisibleViewport();
 			return;
 		}
 
-		// Height changes normally need a full re-render to keep the visible viewport aligned,
-		// but Termux changes height when the software keyboard shows or hides.
-		// In that environment, a full redraw causes the entire history to replay on every toggle.
+		// Height changes need the visible viewport realigned, but repainting every
+		// logical chat line makes the terminal appear to scroll through history.
+		// Termux changes height when the software keyboard shows or hides; keep its
+		// existing differential path to avoid unnecessary clears on keyboard toggles.
 		if (heightChanged && !isTermuxSession()) {
 			logRedraw(`terminal height changed (${this.previousHeight} -> ${height})`);
-			fullRender(true);
+			renderVisibleViewport();
 			return;
 		}
 

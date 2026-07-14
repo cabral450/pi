@@ -35,6 +35,20 @@ function stripAnsi(line: string): string {
 	return line.replace(/\x1b\[[0-9;]*m/g, "");
 }
 
+function boxedCode(codeLines: string[], lang = "", width = 80): string[] {
+	const borderWidth = Math.max(4, Math.min(width, 100));
+	const label = lang ? ` ${lang} ` : "";
+	const codeWidth = Math.max(1, borderWidth - 4);
+	return [
+		`╭${label}${"─".repeat(Math.max(1, borderWidth - 2 - label.length))}╮`,
+		...codeLines.map((line) => {
+			const content = line || " ";
+			return `│ ${content}${" ".repeat(Math.max(0, codeWidth - content.length))} │`;
+		}),
+		`╰${"─".repeat(Math.max(1, borderWidth - 2))}╯`,
+	];
+}
+
 describe("Markdown component", () => {
 	describe("Lists", () => {
 		it("should render simple nested list", () => {
@@ -294,7 +308,12 @@ describe("Markdown component", () => {
 
 			const lines = markdown.render(24).map((line) => stripAnsi(line).trimEnd());
 
-			assert.deepStrictEqual(lines, ["- ```ts", "    alpha beta gamma", "  delta epsilon zeta", "  ```"]);
+			assert.deepStrictEqual(lines, [
+				"- ╭ ts ────────────────╮",
+				"  │ alpha beta gamma   │",
+				"  │ delta epsilon zeta │",
+				"  ╰────────────────────╯",
+			]);
 		});
 	});
 
@@ -786,16 +805,16 @@ again, hello world`,
 			const lines = markdown.render(80);
 			const plainLines = lines.map((line) => line.replace(/\x1b\[[0-9;]*m/g, "").trimEnd());
 
-			const closingBackticksIndex = plainLines.indexOf("```");
-			assert.ok(closingBackticksIndex !== -1, "Should have closing backticks");
+			const closingBorderIndex = plainLines.findIndex((line) => /^╰─+╯$/.test(line));
+			assert.ok(closingBorderIndex !== -1, "Should have a closing code-block border");
 
-			const afterBackticks = plainLines.slice(closingBackticksIndex + 1);
-			const emptyLineCount = afterBackticks.findIndex((line) => line !== "");
+			const afterBorder = plainLines.slice(closingBorderIndex + 1);
+			const emptyLineCount = afterBorder.findIndex((line) => line !== "");
 
 			assert.strictEqual(
 				emptyLineCount,
 				1,
-				`Expected 1 empty line after code block, but found ${emptyLineCount}. Lines after backticks: ${JSON.stringify(afterBackticks.slice(0, 5))}`,
+				`Expected 1 empty line after code block, but found ${emptyLineCount}. Lines after border: ${JSON.stringify(afterBorder.slice(0, 5))}`,
 			);
 		});
 
@@ -814,7 +833,7 @@ code block
 
 more text`,
 			];
-			const expectedLines = ["hello this is text", "", "```", "  code block", "```", "", "more text"];
+			const expectedLines = ["hello this is text", "", ...boxedCode(["code block"]), "", "more text"];
 
 			for (const text of cases) {
 				const markdown = new Markdown(text, 0, 0, defaultMarkdownTheme);
@@ -1402,27 +1421,27 @@ bar`,
 			const cases = [
 				{
 					input: "```ts\nconst x = 1;\n``",
-					expected: ["```ts", "  const x = 1;", "```"],
+					expected: boxedCode(["const x = 1;"], "ts"),
 				},
 				{
 					input: "```md\nnot a closing fence:\n``\n```",
-					expected: ["```md", "  not a closing fence:", "  ``", "```"],
+					expected: boxedCode(["not a closing fence:", "``"], "md"),
 				},
 				{
 					input: "```ts\n``",
-					expected: ["```ts", "", "```"],
+					expected: boxedCode([""], "ts"),
 				},
 				{
 					input: "````\n```",
-					expected: ["```", "", "```"],
+					expected: boxedCode([""]),
 				},
 				{
 					input: "~~~~~\n~~~~",
-					expected: ["```", "", "```"],
+					expected: boxedCode([""]),
 				},
 				{
 					input: "```md\nnot a closing fence:\n``\n```\n\nafter",
-					expected: ["```md", "  not a closing fence:", "  ``", "```", "", "after"],
+					expected: [...boxedCode(["not a closing fence:", "``"], "md"), "", "after"],
 				},
 			];
 

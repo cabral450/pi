@@ -39,6 +39,12 @@ export interface EditorComponent extends Component {
 	/** Add text to history for up/down navigation */
 	addToHistory?(text: string): void;
 
+	/** Get history in most-recent-first order */
+	getHistory?(): string[];
+
+	/** Replace history from entries in most-recent-first order */
+	setHistory?(history: readonly string[]): void;
+
 	// =========================================================================
 	// Advanced text manipulation (optional)
 	// =========================================================================

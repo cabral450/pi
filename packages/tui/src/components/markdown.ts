@@ -376,21 +376,24 @@ export class Markdown implements Component {
 				break;
 
 			case "code": {
-				const indent = this.theme.codeBlockIndent ?? "  ";
-				lines.push(this.theme.codeBlockBorder(`\`\`\`${token.lang || ""}`));
-				if (this.theme.highlightCode) {
-					const highlightedLines = this.theme.highlightCode(token.text, token.lang);
-					for (const hlLine of highlightedLines) {
-						lines.push(`${indent}${hlLine}`);
-					}
-				} else {
-					// Split code by newlines and style each line
-					const codeLines = token.text.split("\n");
-					for (const codeLine of codeLines) {
-						lines.push(`${indent}${this.theme.codeBlock(codeLine)}`);
+				const borderWidth = Math.max(4, Math.min(width, 100));
+				const label = token.lang ? ` ${token.lang} ` : "";
+				const topRuleWidth = Math.max(1, borderWidth - 2 - visibleWidth(label));
+				lines.push(this.theme.codeBlockBorder(`╭${label}${"─".repeat(topRuleWidth)}╮`));
+				const highlightedLines = this.theme.highlightCode
+					? this.theme.highlightCode(token.text, token.lang)
+					: token.text.split("\n").map((codeLine: string) => this.theme.codeBlock(codeLine));
+				const codeWidth = Math.max(1, borderWidth - 4);
+				for (const highlightedLine of highlightedLines) {
+					const wrappedCodeLines = wrapTextWithAnsi(highlightedLine || " ", codeWidth);
+					for (const wrappedCodeLine of wrappedCodeLines.length ? wrappedCodeLines : [""]) {
+						const padding = " ".repeat(Math.max(0, codeWidth - visibleWidth(wrappedCodeLine)));
+						lines.push(
+							this.theme.codeBlockBorder("│ ") + wrappedCodeLine + padding + this.theme.codeBlockBorder(" │"),
+						);
 					}
 				}
-				lines.push(this.theme.codeBlockBorder("```"));
+				lines.push(this.theme.codeBlockBorder(`╰${"─".repeat(Math.max(1, borderWidth - 2))}╯`));
 				if (nextTokenType && nextTokenType !== "space") {
 					lines.push(""); // Add spacing after code blocks (unless space token follows)
 				}

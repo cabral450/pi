@@ -322,9 +322,9 @@ describe("TUI Kitty image cleanup", () => {
 });
 
 describe("TUI resize handling", () => {
-	it("triggers full re-render when terminal height changes", async () => {
+	it("repaints and bottom-anchors short content when terminal height changes", async () => {
 		await withEnv({ TERMUX_VERSION: undefined }, async () => {
-			const terminal = new VirtualTerminal(40, 10);
+			const terminal = new LoggingVirtualTerminal(40, 10);
 			const tui = new TUI(terminal);
 			const component = new TestComponent();
 			tui.addChild(component);
@@ -334,6 +334,7 @@ describe("TUI resize handling", () => {
 			await terminal.waitForRender();
 
 			const initialRedraws = tui.fullRedraws;
+			terminal.clearWrites();
 
 			// Resize height
 			terminal.resize(40, 15);
@@ -343,8 +344,58 @@ describe("TUI resize handling", () => {
 			assert.ok(tui.fullRedraws > initialRedraws, "Height change should trigger full redraw");
 
 			const viewport = terminal.getViewport();
-			assert.ok(viewport[0]?.includes("Line 0"), "Content preserved after height change");
+			assert.deepStrictEqual(viewport.slice(-3), ["Line 0", "Line 1", "Line 2"]);
+			assert.ok(!terminal.getWrites().includes("\x1b[3J"), "Resize repaint should preserve scrollback");
 
+			tui.stop();
+		});
+	});
+
+	it("replays a provider-selected suffix without clearing scrollback", async () => {
+		await withEnv({ TERMUX_VERSION: undefined }, async () => {
+			const terminal = new LoggingVirtualTerminal(30, 5);
+			const tui = new TUI(terminal);
+			const component = new TestComponent();
+			tui.addChild(component);
+			component.lines = Array.from({ length: 20 }, (_, index) => `Line ${index}`);
+			tui.setResizeRedrawProvider((context) => {
+				assert.strictEqual(context.lines.length, 20);
+				assert.strictEqual(context.hasOverlays, false);
+				return 10;
+			});
+
+			tui.start();
+			await terminal.waitForRender();
+			terminal.clearWrites();
+			terminal.resize(30, 6);
+			await terminal.waitForRender();
+
+			const writes = terminal.getWrites();
+			assert.ok(writes.includes("Line 10"), "Provider-selected suffix should be replayed");
+			assert.ok(!writes.includes("\x1b[3J"), "Suffix repaint should preserve existing scrollback");
+			assert.ok(terminal.getViewport().at(-1)?.includes("Line 19"), "Logical bottom should stay visible");
+			tui.stop();
+		});
+	});
+
+	it("continues differential rendering after bottom-anchoring a short buffer", async () => {
+		await withEnv({ TERMUX_VERSION: undefined }, async () => {
+			const terminal = new VirtualTerminal(30, 5);
+			const tui = new TUI(terminal);
+			const component = new TestComponent();
+			tui.addChild(component);
+			component.lines = ["Line 0", "Line 1"];
+
+			tui.start();
+			await terminal.waitForRender();
+			terminal.resize(30, 8);
+			await terminal.waitForRender();
+
+			component.lines.push("Line 2");
+			tui.requestRender();
+			await terminal.waitForRender();
+
+			assert.deepStrictEqual(terminal.getViewport().slice(-3), ["Line 0", "Line 1", "Line 2"]);
 			tui.stop();
 		});
 	});

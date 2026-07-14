@@ -501,9 +501,8 @@ export class ProcessTerminal implements Terminal {
 		process.stdout.write("\x1b[2J\x1b[H"); // Clear screen and move to home (1,1)
 	}
 
-	setTitle(title: string): void {
-		// OSC 0;title BEL - set terminal window title
-		process.stdout.write(`\x1b]0;${title}\x07`);
+	setTitle(_title: string): void {
+		// Disabled locally: terminal title OSC sequences can break rendering in some terminals.
 	}
 
 	setProgress(active: boolean): void {
