@@ -2,10 +2,14 @@ import { type AgentMessage, uuidv7 } from "@earendil-works/pi-agent-core";
 import type { ImageContent, Message, TextContent } from "@earendil-works/pi-ai";
 import { randomUUID } from "crypto";
 import {
-	appendFileSync,
 	closeSync,
+	constants as fsConstants,
 	createReadStream,
 	existsSync,
+	fchmodSync,
+	fstatSync,
+	ftruncateSync,
+	lstatSync,
 	mkdirSync,
 	openSync,
 	readdirSync,
@@ -13,6 +17,7 @@ import {
 	statSync,
 	writeFileSync,
 } from "fs";
+import type { Stats } from "fs";
 import { readdir, stat } from "fs/promises";
 import { join, resolve } from "path";
 import { createInterface } from "readline";
@@ -28,6 +33,127 @@ import {
 } from "./messages.ts";
 
 export const CURRENT_SESSION_VERSION = 3;
+
+const PRIVATE_SESSION_DIR_MODE = 0o700;
+const PRIVATE_SESSION_FILE_MODE = 0o600;
+const NO_FOLLOW = fsConstants.O_NOFOLLOW ?? 0;
+const DIRECTORY_ONLY = fsConstants.O_DIRECTORY ?? 0;
+
+function sameFileIdentity(left: Stats, right: Stats): boolean {
+	return left.dev === right.dev && left.ino === right.ino;
+}
+
+function assertExpectedPathType(
+	filePath: string,
+	stats: Stats,
+	expected: "file" | "directory",
+): void {
+	if (stats.isSymbolicLink()) throw new Error(`Refusing symbolic link ${expected} path: ${filePath}`);
+	if (expected === "file" && !stats.isFile()) throw new Error(`Session file path is not a regular file: ${filePath}`);
+	if (expected === "directory" && !stats.isDirectory()) {
+		throw new Error(`Session directory path is not a directory: ${filePath}`);
+	}
+}
+
+function ensurePrivateSessionDir(dir: string): string {
+	const resolvedDir = normalizePath(dir);
+	mkdirSync(resolvedDir, { recursive: true, mode: PRIVATE_SESSION_DIR_MODE });
+	const before = lstatSync(resolvedDir);
+	assertExpectedPathType(resolvedDir, before, "directory");
+	const fd = openSync(resolvedDir, fsConstants.O_RDONLY | DIRECTORY_ONLY | NO_FOLLOW);
+	try {
+		const opened = fstatSync(fd);
+		if (!opened.isDirectory() || !sameFileIdentity(before, opened)) {
+			throw new Error(`Session directory changed while hardening: ${resolvedDir}`);
+		}
+		fchmodSync(fd, PRIVATE_SESSION_DIR_MODE);
+		const after = lstatSync(resolvedDir);
+		assertExpectedPathType(resolvedDir, after, "directory");
+		if (!sameFileIdentity(after, opened)) throw new Error(`Session directory changed while hardening: ${resolvedDir}`);
+	} finally {
+		closeSync(fd);
+	}
+	return resolvedDir;
+}
+
+function openValidatedSessionFile(filePath: string, flags: number, harden: boolean): number {
+	const resolvedFilePath = normalizePath(filePath);
+	const before = lstatSync(resolvedFilePath);
+	assertExpectedPathType(resolvedFilePath, before, "file");
+	const fd = openSync(resolvedFilePath, flags | NO_FOLLOW);
+	try {
+		const opened = fstatSync(fd);
+		if (!opened.isFile() || !sameFileIdentity(before, opened)) {
+			throw new Error(`Session file changed while opening: ${resolvedFilePath}`);
+		}
+		if (harden) fchmodSync(fd, PRIVATE_SESSION_FILE_MODE);
+		const after = lstatSync(resolvedFilePath);
+		assertExpectedPathType(resolvedFilePath, after, "file");
+		if (!sameFileIdentity(after, opened)) throw new Error(`Session file changed while opening: ${resolvedFilePath}`);
+		return fd;
+	} catch (error) {
+		closeSync(fd);
+		throw error;
+	}
+}
+
+function openSessionFileForRead(filePath: string): number {
+	return openValidatedSessionFile(filePath, fsConstants.O_RDONLY, false);
+}
+
+function hardenExistingSessionFile(filePath: string): void {
+	const fd = openValidatedSessionFile(filePath, fsConstants.O_RDONLY, true);
+	closeSync(fd);
+}
+
+function openPrivateSessionFileForRewrite(filePath: string): number {
+	const resolvedFilePath = normalizePath(filePath);
+	let exists = true;
+	try {
+		lstatSync(resolvedFilePath);
+	} catch (error) {
+		if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+		exists = false;
+	}
+	if (!exists) {
+		return openSync(
+			resolvedFilePath,
+			fsConstants.O_WRONLY | fsConstants.O_CREAT | fsConstants.O_EXCL | NO_FOLLOW,
+			PRIVATE_SESSION_FILE_MODE,
+		);
+	}
+	const fd = openValidatedSessionFile(resolvedFilePath, fsConstants.O_WRONLY, true);
+	try {
+		ftruncateSync(fd, 0);
+		return fd;
+	} catch (error) {
+		closeSync(fd);
+		throw error;
+	}
+}
+
+function writePrivateSessionFile(filePath: string, content: string, mode: "append" | "exclusive"): void {
+	const resolvedFilePath = normalizePath(filePath);
+	const fd =
+		mode === "append"
+			? openValidatedSessionFile(resolvedFilePath, fsConstants.O_WRONLY | fsConstants.O_APPEND, true)
+			: openSync(
+					resolvedFilePath,
+					fsConstants.O_WRONLY | fsConstants.O_CREAT | fsConstants.O_EXCL | NO_FOLLOW,
+					PRIVATE_SESSION_FILE_MODE,
+				);
+	try {
+		const opened = fstatSync(fd);
+		if (!opened.isFile()) throw new Error(`Session file path is not a regular file: ${resolvedFilePath}`);
+		const current = lstatSync(resolvedFilePath);
+		assertExpectedPathType(resolvedFilePath, current, "file");
+		if (!sameFileIdentity(current, opened)) throw new Error(`Session file changed while creating: ${resolvedFilePath}`);
+		fchmodSync(fd, PRIVATE_SESSION_FILE_MODE);
+		writeFileSync(fd, content);
+	} finally {
+		closeSync(fd);
+	}
+}
 
 export interface SessionHeader {
 	type: "session";
@@ -477,11 +603,9 @@ function getDefaultSessionDirPath(cwd: string, agentDir: string = getDefaultAgen
 }
 
 export function getDefaultSessionDir(cwd: string, agentDir: string = getDefaultAgentDir()): string {
-	const sessionDir = getDefaultSessionDirPath(cwd, agentDir);
-	if (!existsSync(sessionDir)) {
-		mkdirSync(sessionDir, { recursive: true });
-	}
-	return sessionDir;
+	const sessionsRoot = join(resolvePath(agentDir), "sessions");
+	ensurePrivateSessionDir(sessionsRoot);
+	return ensurePrivateSessionDir(getDefaultSessionDirPath(cwd, agentDir));
 }
 
 const SESSION_READ_BUFFER_SIZE = 1024 * 1024;
@@ -502,7 +626,7 @@ export function loadEntriesFromFile(filePath: string): FileEntry[] {
 	if (!existsSync(resolvedFilePath)) return [];
 
 	const entries: FileEntry[] = [];
-	const fd = openSync(resolvedFilePath, "r");
+	const fd = openSessionFileForRead(resolvedFilePath);
 	try {
 		const decoder = new StringDecoder("utf8");
 		const buffer = Buffer.allocUnsafe(SESSION_READ_BUFFER_SIZE);
@@ -542,11 +666,11 @@ export function loadEntriesFromFile(filePath: string): FileEntry[] {
 }
 
 function readSessionHeader(filePath: string): SessionHeader | null {
+	let fd: number | undefined;
 	try {
-		const fd = openSync(filePath, "r");
+		fd = openSessionFileForRead(filePath);
 		const buffer = Buffer.alloc(512);
 		const bytesRead = readSync(fd, buffer, 0, 512, 0);
-		closeSync(fd);
 		const firstLine = buffer.toString("utf8", 0, bytesRead).split("\n")[0];
 		if (!firstLine) return null;
 		const header = JSON.parse(firstLine) as Record<string, unknown>;
@@ -556,6 +680,8 @@ function readSessionHeader(filePath: string): SessionHeader | null {
 		return header as unknown as SessionHeader;
 	} catch {
 		return null;
+	} finally {
+		if (fd !== undefined) closeSync(fd);
 	}
 }
 
@@ -622,6 +748,8 @@ function getMessageActivityTime(entry: SessionMessageEntry): number | undefined 
 
 async function buildSessionInfo(filePath: string): Promise<SessionInfo | null> {
 	try {
+		const linkStats = lstatSync(filePath);
+		assertExpectedPathType(filePath, linkStats, "file");
 		const stats = await stat(filePath);
 		let header: SessionHeader | null = null;
 		let messageCount = 0;
@@ -811,9 +939,7 @@ export class SessionManager {
 		this.cwd = resolvePath(cwd);
 		this.sessionDir = normalizePath(sessionDir);
 		this.persist = persist;
-		if (persist && this.sessionDir && !existsSync(this.sessionDir)) {
-			mkdirSync(this.sessionDir, { recursive: true });
-		}
+		if (persist && this.sessionDir) ensurePrivateSessionDir(this.sessionDir);
 
 		if (sessionFile) {
 			this.setSessionFile(sessionFile);
@@ -826,6 +952,7 @@ export class SessionManager {
 	setSessionFile(sessionFile: string): void {
 		this.sessionFile = resolvePath(sessionFile);
 		if (existsSync(this.sessionFile)) {
+			hardenExistingSessionFile(this.sessionFile);
 			this.fileEntries = loadEntriesFromFile(this.sessionFile);
 
 			// If file was empty, initialize it with a valid session header. If it was
@@ -909,7 +1036,8 @@ export class SessionManager {
 
 	private _rewriteFile(): void {
 		if (!this.persist || !this.sessionFile) return;
-		const fd = openSync(this.sessionFile, "w");
+		ensurePrivateSessionDir(this.sessionDir);
+		const fd = openPrivateSessionFileForRewrite(this.sessionFile);
 		try {
 			for (const entry of this.fileEntries) {
 				writeFileSync(fd, `${JSON.stringify(entry)}\n`);
@@ -945,11 +1073,12 @@ export class SessionManager {
 
 	_persist(entry: SessionEntry): void {
 		if (!this.persist || !this.sessionFile) return;
+		ensurePrivateSessionDir(this.sessionDir);
 
 		const hasAssistant = this.fileEntries.some((e) => e.type === "message" && e.message.role === "assistant");
 		if (!hasAssistant) {
 			if (this.flushed) {
-				appendFileSync(this.sessionFile, `${JSON.stringify(entry)}\n`);
+				writePrivateSessionFile(this.sessionFile, `${JSON.stringify(entry)}\n`, "append");
 			} else {
 				// Mark as not flushed so when assistant arrives, all entries get written
 				this.flushed = false;
@@ -958,17 +1087,14 @@ export class SessionManager {
 		}
 
 		if (!this.flushed) {
-			const fd = openSync(this.sessionFile, "wx");
-			try {
-				for (const e of this.fileEntries) {
-					writeFileSync(fd, `${JSON.stringify(e)}\n`);
-				}
-			} finally {
-				closeSync(fd);
-			}
+			writePrivateSessionFile(
+				this.sessionFile,
+				this.fileEntries.map((fileEntry) => `${JSON.stringify(fileEntry)}\n`).join(""),
+				"exclusive",
+			);
 			this.flushed = true;
 		} else {
-			appendFileSync(this.sessionFile, `${JSON.stringify(entry)}\n`);
+			writePrivateSessionFile(this.sessionFile, `${JSON.stringify(entry)}\n`, "append");
 		}
 	}
 
@@ -1466,7 +1592,7 @@ export class SessionManager {
 	 * @param sessionDir Optional session directory. If omitted, uses default (~/.pi/agent/sessions/<encoded-cwd>/).
 	 */
 	static continueRecent(cwd: string, sessionDir?: string): SessionManager {
-		const dir = sessionDir ? normalizePath(sessionDir) : getDefaultSessionDir(cwd);
+		const dir = sessionDir ? ensurePrivateSessionDir(sessionDir) : getDefaultSessionDir(cwd);
 		const filterCwd = sessionDir !== undefined && dir !== getDefaultSessionDirPath(cwd);
 		const mostRecent = findMostRecentSession(dir, filterCwd ? cwd : undefined);
 		if (mostRecent) {
@@ -1505,10 +1631,7 @@ export class SessionManager {
 			throw new Error(`Cannot fork: source session has no header: ${resolvedSourcePath}`);
 		}
 
-		const dir = sessionDir ? normalizePath(sessionDir) : getDefaultSessionDir(resolvedTargetCwd);
-		if (!existsSync(dir)) {
-			mkdirSync(dir, { recursive: true });
-		}
+		const dir = sessionDir ? ensurePrivateSessionDir(sessionDir) : getDefaultSessionDir(resolvedTargetCwd);
 
 		// Create new session file with new ID but forked content
 		if (options?.id !== undefined) {
@@ -1528,14 +1651,12 @@ export class SessionManager {
 			cwd: resolvedTargetCwd,
 			parentSession: resolvedSourcePath,
 		};
-		writeFileSync(newSessionFile, `${JSON.stringify(newHeader)}\n`, { flag: "wx" });
-
-		// Copy all non-header entries from source
-		for (const entry of sourceEntries) {
-			if (entry.type !== "session") {
-				appendFileSync(newSessionFile, `${JSON.stringify(entry)}\n`);
-			}
-		}
+		const forkEntries = [newHeader, ...sourceEntries.filter((entry) => entry.type !== "session")];
+		writePrivateSessionFile(
+			newSessionFile,
+			forkEntries.map((entry) => `${JSON.stringify(entry)}\n`).join(""),
+			"exclusive",
+		);
 
 		return new SessionManager(resolvedTargetCwd, dir, newSessionFile, true);
 	}
@@ -1547,7 +1668,7 @@ export class SessionManager {
 	 * @param onProgress Optional callback for progress updates (loaded, total)
 	 */
 	static async list(cwd: string, sessionDir?: string, onProgress?: SessionListProgress): Promise<SessionInfo[]> {
-		const dir = sessionDir ? normalizePath(sessionDir) : getDefaultSessionDir(cwd);
+		const dir = sessionDir ? ensurePrivateSessionDir(sessionDir) : getDefaultSessionDir(cwd);
 		const filterCwd = sessionDir !== undefined && dir !== getDefaultSessionDirPath(cwd);
 		const resolvedCwd = resolvePath(cwd);
 		const sessions = (await listSessionsFromDir(dir, onProgress)).filter(
@@ -1568,7 +1689,7 @@ export class SessionManager {
 		onProgress?: SessionListProgress,
 	): Promise<SessionInfo[]> {
 		const customSessionDir =
-			typeof sessionDirOrOnProgress === "string" ? normalizePath(sessionDirOrOnProgress) : undefined;
+			typeof sessionDirOrOnProgress === "string" ? ensurePrivateSessionDir(sessionDirOrOnProgress) : undefined;
 		const progress = typeof sessionDirOrOnProgress === "function" ? sessionDirOrOnProgress : onProgress;
 		if (customSessionDir) {
 			const sessions = await listSessionsFromDir(customSessionDir, progress);
@@ -1582,6 +1703,7 @@ export class SessionManager {
 			if (!existsSync(sessionsDir)) {
 				return [];
 			}
+			ensurePrivateSessionDir(sessionsDir);
 			const entries = await readdir(sessionsDir, { withFileTypes: true });
 			const dirs = entries.filter((e) => e.isDirectory()).map((e) => join(sessionsDir, e.name));
 

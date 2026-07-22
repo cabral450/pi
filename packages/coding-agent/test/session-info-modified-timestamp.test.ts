@@ -1,4 +1,4 @@
-import { writeFileSync } from "node:fs";
+import { mkdtempSync, writeFileSync } from "node:fs";
 import { stat } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
@@ -47,7 +47,9 @@ describe("SessionInfo.modified", () => {
 	});
 
 	it("uses last user/assistant message timestamp instead of file mtime", async () => {
-		const filePath = join(tmpdir(), `pi-session-${Date.now()}-modified.jsonl`);
+		// SessionManager hardens managed session directories to 0700, so use an
+		// owned temporary directory rather than attempting to harden /tmp itself.
+		const filePath = join(mkdtempSync(join(tmpdir(), "pi-session-info-")), "modified.jsonl");
 		createSessionFile(filePath);
 
 		const before = await stat(filePath);

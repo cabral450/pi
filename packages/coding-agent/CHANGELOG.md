@@ -20,6 +20,7 @@
 
 ### Fixed
 
+- Hardened persisted session storage so default and custom session directories use private `0700` permissions, session files use `0600` across create/resume/migration/fork/branch flows, and symlink or path-type swaps are refused.
 - Fixed inherited OpenRouter model context windows to use the top provider's actual context length ([#6481](https://github.com/earendil-works/pi-mono/pull/6481) by [@davidbrai](https://github.com/davidbrai)).
 - Fixed inherited OpenRouter OpenAI-compatible session IDs to use the `x-session-id` header instead of OpenAI-specific session-affinity fields ([#6366](https://github.com/earendil-works/pi/issues/6366)).
 - Fixed `Ctrl+V` to paste clipboard text when the pasteboard does not contain an image.
