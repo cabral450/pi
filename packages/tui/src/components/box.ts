@@ -2,6 +2,8 @@ import type { Component } from "../tui.ts";
 import { applyBackgroundToLine, visibleWidth } from "../utils.ts";
 
 type RenderCache = {
+	childComponents: Component[];
+	childChunks: string[][];
 	childLines: string[];
 	width: number;
 	bgSample: string | undefined;
@@ -53,7 +55,20 @@ export class Box implements Component {
 		this.cache = undefined;
 	}
 
-	private matchCache(width: number, childLines: string[], bgSample: string | undefined): boolean {
+	private matchCacheByIdentity(width: number, childChunks: string[][], bgSample: string | undefined): boolean {
+		const cache = this.cache;
+		return (
+			!!cache &&
+			cache.width === width &&
+			cache.bgSample === bgSample &&
+			cache.childComponents.length === this.children.length &&
+			cache.childChunks.length === childChunks.length &&
+			cache.childComponents.every((child, index) => child === this.children[index]) &&
+			cache.childChunks.every((lines, index) => lines === childChunks[index])
+		);
+	}
+
+	private matchCacheByContent(width: number, childLines: string[], bgSample: string | undefined): boolean {
 		const cache = this.cache;
 		return (
 			!!cache &&
@@ -77,12 +92,18 @@ export class Box implements Component {
 		}
 
 		const contentWidth = Math.max(1, width - this.paddingX * 2);
-		const leftPad = " ".repeat(this.paddingX);
 
-		// Render all children
+		// Check stable child output by identity before rebuilding every padded line.
+		// Cached TUI components replace their output array when content changes.
+		const childChunks = this.children.map((child) => child.render(contentWidth));
+		const bgSample = this.bgFn ? this.bgFn("test") : undefined;
+		if (this.matchCacheByIdentity(width, childChunks, bgSample)) {
+			return this.cache!.lines;
+		}
+
+		const leftPad = " ".repeat(this.paddingX);
 		const childLines: string[] = [];
-		for (const child of this.children) {
-			const lines = child.render(contentWidth);
+		for (const lines of childChunks) {
 			for (const line of lines) {
 				childLines.push(leftPad + line);
 			}
@@ -92,11 +113,11 @@ export class Box implements Component {
 			return [];
 		}
 
-		// Check if bgFn output changed by sampling
-		const bgSample = this.bgFn ? this.bgFn("test") : undefined;
-
-		// Check cache validity
-		if (this.matchCache(width, childLines, bgSample)) {
+		// Preserve content-based reuse for components that return a fresh but equal array.
+		if (this.matchCacheByContent(width, childLines, bgSample)) {
+			this.cache!.childComponents = [...this.children];
+			this.cache!.childChunks = childChunks;
+			this.cache!.childLines = childLines;
 			return this.cache!.lines;
 		}
 
@@ -119,7 +140,14 @@ export class Box implements Component {
 		}
 
 		// Update cache
-		this.cache = { childLines, width, bgSample, lines: result };
+		this.cache = {
+			childComponents: [...this.children],
+			childChunks,
+			childLines,
+			width,
+			bgSample,
+			lines: result,
+		};
 
 		return result;
 	}

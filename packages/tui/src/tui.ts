@@ -268,36 +268,60 @@ type OverlayFocusRestorePolicy = "clear" | "preserve";
  */
 export class Container implements Component {
 	children: Component[] = [];
+	private renderCache: { width: number; children: Component[]; childLines: string[][]; lines: string[] } | undefined;
+
+	private clearRenderCache(): void {
+		this.renderCache = undefined;
+	}
 
 	addChild(component: Component): void {
 		this.children.push(component);
+		this.clearRenderCache();
 	}
 
 	removeChild(component: Component): void {
 		const index = this.children.indexOf(component);
 		if (index !== -1) {
 			this.children.splice(index, 1);
+			this.clearRenderCache();
 		}
 	}
 
 	clear(): void {
 		this.children = [];
+		this.clearRenderCache();
 	}
 
 	invalidate(): void {
+		this.clearRenderCache();
 		for (const child of this.children) {
 			child.invalidate?.();
 		}
 	}
 
 	render(width: number): string[] {
-		const lines: string[] = [];
-		for (const child of this.children) {
-			const childLines = child.render(width);
-			for (const line of childLines) {
-				lines.push(line);
-			}
+		const renderedChildren = this.children.map((child) => child.render(width));
+		const cache = this.renderCache;
+		if (
+			cache?.width === width &&
+			cache.children.length === this.children.length &&
+			cache.children.every((child, index) => child === this.children[index]) &&
+			cache.childLines.every((previous, index) => {
+				const next = renderedChildren[index];
+				return (
+					previous === next ||
+					(previous.length === next.length && previous.every((line, lineIndex) => line === next[lineIndex]))
+				);
+			})
+		) {
+			return cache.lines;
 		}
+
+		const lines: string[] = [];
+		for (const childLines of renderedChildren) {
+			for (const line of childLines) lines.push(line);
+		}
+		this.renderCache = { width, children: [...this.children], childLines: renderedChildren, lines };
 		return lines;
 	}
 }
@@ -308,6 +332,9 @@ export class Container implements Component {
 export class TUI extends Container {
 	public terminal: Terminal;
 	private previousLines: string[] = [];
+	private previousRenderComponents: Component[] = [];
+	private previousRenderChunks: string[][] = [];
+	private previousCursorPosition: { row: number; col: number } | null = null;
 	private previousKittyImageIds = new Set<number>();
 	private previousWidth = 0;
 	private previousHeight = 0;
@@ -732,6 +759,9 @@ export class TUI extends Container {
 	requestRender(force = false): void {
 		if (force) {
 			this.previousLines = [];
+			this.previousRenderComponents = [];
+			this.previousRenderChunks = [];
+			this.previousCursorPosition = null;
 			this.previousWidth = -1; // -1 triggers widthChanged, forcing a full clear
 			this.previousHeight = -1; // -1 triggers heightChanged, forcing a full clear
 			this.cursorRow = 0;
@@ -1112,9 +1142,9 @@ export class TUI extends Container {
 
 	private static readonly SEGMENT_RESET = "\x1b[0m\x1b]8;;\x07";
 
-	private applyLineResets(lines: string[]): string[] {
+	private applyLineResets(lines: string[], start = 0): string[] {
 		const reset = TUI.SEGMENT_RESET;
-		for (let i = 0; i < lines.length; i++) {
+		for (let i = start; i < lines.length; i++) {
 			const line = lines[i];
 			if (!isImageLine(line)) {
 				lines[i] = normalizeTerminalOutput(line) + reset;
@@ -1131,6 +1161,14 @@ export class TUI extends Container {
 			}
 		}
 		return ids;
+	}
+
+	private rangeHasKittyImages(lines: string[], first: number, last: number): boolean {
+		const end = Math.min(last, lines.length - 1);
+		for (let i = Math.max(0, first); i <= end; i++) {
+			if (extractKittyImageIds(lines[i] ?? "").length > 0) return true;
+		}
+		return false;
 	}
 
 	private deleteKittyImages(ids: Iterable<number>): string {
@@ -1287,18 +1325,57 @@ export class TUI extends Container {
 			return targetScreenRow - currentScreenRow;
 		};
 
-		// Render all components to get new lines
-		let newLines = this.render(width);
+		// Render direct children as stable chunks. Containers preserve their output
+		// array when descendants are unchanged, allowing a large transcript prefix
+		// to be reused when only a later child (usually the editor) changes.
+		const renderedChildren = this.children.map((child) => child.render(width));
+		let firstChangedChild = 0;
+		let reusedPrefixLines = 0;
+		const canReusePrefix =
+			!widthChanged &&
+			this.overlayStack.length === 0 &&
+			this.previousRenderComponents.length === this.children.length &&
+			this.previousRenderChunks.length === renderedChildren.length;
+		if (canReusePrefix) {
+			while (
+				firstChangedChild < renderedChildren.length &&
+				this.previousRenderComponents[firstChangedChild] === this.children[firstChangedChild] &&
+				this.previousRenderChunks[firstChangedChild] === renderedChildren[firstChangedChild]
+			) {
+				reusedPrefixLines += renderedChildren[firstChangedChild]!.length;
+				firstChangedChild++;
+			}
+		}
+		if (reusedPrefixLines > this.previousLines.length) {
+			firstChangedChild = 0;
+			reusedPrefixLines = 0;
+		}
+
+		let newLines = reusedPrefixLines > 0 ? this.previousLines.slice(0, reusedPrefixLines) : [];
+		for (let i = firstChangedChild; i < renderedChildren.length; i++) {
+			for (const line of renderedChildren[i]!) newLines.push(line);
+		}
+		this.previousRenderComponents = [...this.children];
+		this.previousRenderChunks = renderedChildren;
 
 		// Composite overlays into the rendered lines (before differential compare)
 		if (this.overlayStack.length > 0) {
 			newLines = this.compositeOverlays(newLines, width, height);
+			reusedPrefixLines = 0;
 		}
 
-		// Extract cursor position before applying line resets (marker must be found first)
-		const cursorPos = this.extractCursorPosition(newLines, height);
+		// Extract cursor position before applying line resets (marker must be found first).
+		// A marker in an unchanged prefix was stripped during the prior render, so
+		// retain its known position while that exact prefix is reused.
+		const extractedCursorPos = this.extractCursorPosition(newLines, height);
+		const cursorPos =
+			extractedCursorPos ??
+			(this.previousCursorPosition && this.previousCursorPosition.row < reusedPrefixLines
+				? this.previousCursorPosition
+				: null);
+		this.previousCursorPosition = cursorPos;
 
-		newLines = this.applyLineResets(newLines);
+		newLines = this.applyLineResets(newLines, reusedPrefixLines);
 
 		const writeLinesWithImages = (buffer: string, lines: string[]): string => {
 			for (let i = 0; i < lines.length; i++) {
@@ -1466,7 +1543,7 @@ export class TUI extends Container {
 		let firstChanged = -1;
 		let lastChanged = -1;
 		const maxLines = Math.max(newLines.length, this.previousLines.length);
-		for (let i = 0; i < maxLines; i++) {
+		for (let i = reusedPrefixLines; i < maxLines; i++) {
 			const oldLine = i < this.previousLines.length ? this.previousLines[i] : "";
 			const newLine = i < newLines.length ? newLines[i] : "";
 
@@ -1484,11 +1561,19 @@ export class TUI extends Container {
 			}
 			lastChanged = newLines.length - 1;
 		}
-		if (firstChanged !== -1) {
+		const changedRangeHasKittyImages =
+			firstChanged !== -1 &&
+			(this.rangeHasKittyImages(this.previousLines, firstChanged, lastChanged) ||
+				this.rangeHasKittyImages(newLines, firstChanged, lastChanged));
+		if (firstChanged !== -1 && (this.previousKittyImageIds.size > 0 || changedRangeHasKittyImages)) {
 			const expandedRange = this.expandChangedRangeForKittyImages(firstChanged, lastChanged, newLines);
 			firstChanged = expandedRange.firstChanged;
 			lastChanged = expandedRange.lastChanged;
 		}
+		const nextKittyImageIds = (): Set<number> =>
+			this.previousKittyImageIds.size === 0 && !changedRangeHasKittyImages
+				? this.previousKittyImageIds
+				: this.collectKittyImageIds(newLines);
 		const appendStart = appendedLines && firstChanged === this.previousLines.length && firstChanged > 0;
 
 		// No changes - but still need to update hardware cursor position if it moved
@@ -1541,7 +1626,7 @@ export class TUI extends Container {
 			}
 			this.positionHardwareCursor(cursorPos, newLines.length);
 			this.previousLines = newLines;
-			this.previousKittyImageIds = this.collectKittyImageIds(newLines);
+			this.previousKittyImageIds = nextKittyImageIds();
 			this.previousWidth = width;
 			this.previousHeight = height;
 			this.previousViewportTop = prevViewportTop;
@@ -1712,7 +1797,7 @@ export class TUI extends Container {
 		this.positionHardwareCursor(cursorPos, newLines.length);
 
 		this.previousLines = newLines;
-		this.previousKittyImageIds = this.collectKittyImageIds(newLines);
+		this.previousKittyImageIds = nextKittyImageIds();
 		this.previousWidth = width;
 		this.previousHeight = height;
 	}

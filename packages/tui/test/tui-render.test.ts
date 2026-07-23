@@ -9,7 +9,7 @@ import {
 	setCapabilities,
 	setCellDimensions,
 } from "../src/terminal-image.ts";
-import { type Component, TUI } from "../src/tui.ts";
+import { type Component, Container, CURSOR_MARKER, TUI } from "../src/tui.ts";
 import { VirtualTerminal } from "./virtual-terminal.ts";
 
 class TestComponent implements Component {
@@ -534,6 +534,84 @@ describe("TUI content shrinkage", () => {
 });
 
 describe("TUI differential rendering", () => {
+	it("reuses a stable transcript prefix when only the editor changes", async () => {
+		const terminal = new VirtualTerminal(40, 10);
+		const tui = new TUI(terminal);
+		const chat = new TestComponent();
+		const editor = new TestComponent();
+		const chatContainer = new Container();
+		const editorContainer = new Container();
+		chatContainer.addChild(chat);
+		editorContainer.addChild(editor);
+		tui.addChild(chatContainer);
+		tui.addChild(editorContainer);
+
+		chat.lines = Array.from({ length: 20 }, (_, index) => `Chat ${index}`);
+		editor.lines = ["Editor before"];
+		const internal = tui as unknown as {
+			applyLineResets(lines: string[], start?: number): string[];
+		};
+		const applyLineResets = internal.applyLineResets.bind(tui);
+		let normalizedFrom = -1;
+		internal.applyLineResets = (lines, start = 0) => {
+			normalizedFrom = start;
+			return applyLineResets(lines, start);
+		};
+
+		tui.start();
+		await terminal.waitForRender();
+		const firstChatRender = chatContainer.render(40);
+		assert.strictEqual(
+			chatContainer.render(40),
+			firstChatRender,
+			"stable containers should preserve line-array identity",
+		);
+
+		editor.lines = ["Editor after"];
+		tui.requestRender();
+		await terminal.waitForRender();
+
+		assert.strictEqual(normalizedFrom, chat.lines.length, "normalization should skip the stable transcript prefix");
+		assert.ok(
+			terminal.getViewport().at(-1)?.includes("Editor after"),
+			"the changed editor suffix should still render",
+		);
+		tui.stop();
+	});
+
+	it("retains a cursor marker inside a reused prefix", async () => {
+		const terminal = new VirtualTerminal(40, 10);
+		const tui = new TUI(terminal);
+		const chat = new TestComponent();
+		const editor = new TestComponent();
+		const footer = new TestComponent();
+		const chatContainer = new Container();
+		const editorContainer = new Container();
+		chatContainer.addChild(chat);
+		editorContainer.addChild(editor);
+		tui.addChild(chatContainer);
+		tui.addChild(editorContainer);
+		tui.addChild(footer);
+
+		chat.lines = ["Chat"];
+		editor.lines = [`Editor${CURSOR_MARKER}`];
+		footer.lines = ["Footer before"];
+		tui.start();
+		await terminal.waitForRender();
+		const internal = tui as unknown as {
+			previousCursorPosition: { row: number; col: number } | null;
+		};
+		const initialCursor = internal.previousCursorPosition;
+		assert.deepStrictEqual(initialCursor, { row: 1, col: 6 });
+
+		footer.lines = ["Footer after"];
+		tui.requestRender();
+		await terminal.waitForRender();
+
+		assert.deepStrictEqual(internal.previousCursorPosition, initialCursor);
+		tui.stop();
+	});
+
 	it("tracks cursor correctly when content shrinks with unchanged remaining lines", async () => {
 		const terminal = new VirtualTerminal(40, 10);
 		const tui = new TUI(terminal);
