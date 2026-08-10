@@ -14,7 +14,7 @@ describe("Box render caching", () => {
 				return Reflect.get(target, property, receiver);
 			},
 		});
-		const child: Component = { render: () => lines };
+		const child: Component = { render: () => lines, invalidate() {} };
 		const box = new Box(1, 0);
 		box.addChild(child);
 
@@ -27,7 +27,7 @@ describe("Box render caching", () => {
 	});
 
 	it("preserves content-based caching for fresh equal arrays", () => {
-		const child: Component = { render: () => ["same content"] };
+		const child: Component = { render: () => ["same content"], invalidate() {} };
 		const box = new Box(1, 0);
 		box.addChild(child);
 

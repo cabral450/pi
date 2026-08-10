@@ -1,13 +1,13 @@
 import assert from "node:assert";
 import { describe, it } from "node:test";
 import { Editor } from "../src/components/editor.ts";
-import { TUI } from "../src/tui.ts";
+import { TuiMainScreen } from "../src/tui-main-screen.ts";
 import { defaultEditorTheme } from "./test-themes.ts";
 import { VirtualTerminal } from "./virtual-terminal.ts";
 
 describe("Editor history transfer", () => {
 	it("gets and replaces most-recent-first prompt history defensively", () => {
-		const editor = new Editor(new TUI(new VirtualTerminal()), defaultEditorTheme);
+		const editor = new Editor(new TuiMainScreen(new VirtualTerminal()), defaultEditorTheme);
 		editor.setHistory(["newest", "older"]);
 
 		const history = editor.getHistory();
@@ -22,7 +22,7 @@ describe("Editor history transfer", () => {
 	});
 
 	it("resets active history browsing when history is replaced", () => {
-		const editor = new Editor(new TUI(new VirtualTerminal()), defaultEditorTheme);
+		const editor = new Editor(new TuiMainScreen(new VirtualTerminal()), defaultEditorTheme);
 		editor.setHistory(["old"]);
 		editor.handleInput("\x1b[A");
 		editor.setText("");
