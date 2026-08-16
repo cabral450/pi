@@ -11,6 +11,7 @@ import {
 	type ScrollbarGeometry,
 } from "./layout.ts";
 import type { Terminal } from "./terminal.ts";
+import { resolveTerminalCopyAction, setTerminalActionsEnabled, type TerminalCopyAction } from "./terminal-action.ts";
 import {
 	deleteAllKittyImages,
 	deleteAllKittyPlacements,
@@ -210,6 +211,8 @@ export class TuiAltScreen extends TuiBase implements ViewportTUI {
 	}
 
 	protected override beforeTerminalStart(): void {
+		setTerminalActionsEnabled(this, true);
+		this.invalidate();
 		this.stopSelectionAutoScroll();
 		this.selectionPressActive = false;
 		this.stopScrollbarHover();
@@ -250,6 +253,8 @@ export class TuiAltScreen extends TuiBase implements ViewportTUI {
 	}
 
 	protected override beforeTerminalStop(_options: TuiStopOptions): void {
+		setTerminalActionsEnabled(this, false);
+		this.invalidate();
 		this.stopSelectionAutoScroll();
 		this.selectionPressActive = false;
 		this.stopScrollbarHover();
@@ -783,16 +788,23 @@ export class TuiAltScreen extends TuiBase implements ViewportTUI {
 					? this.pressedUrl
 					: undefined;
 			this.pressedUrl = undefined;
-			if (clickedUrl && this.openUrl) {
-				this.selectionAnchor = undefined;
-				this.selectionFocus = undefined;
-				try {
-					this.openUrl(clickedUrl);
-				} catch {
-					// URL activation is best-effort.
+			if (clickedUrl) {
+				const copyAction = resolveTerminalCopyAction(clickedUrl);
+				if (copyAction || this.openUrl) {
+					this.selectionAnchor = undefined;
+					this.selectionFocus = undefined;
+					if (copyAction) {
+						this.executeCopyAction(copyAction);
+					} else {
+						try {
+							this.openUrl?.(clickedUrl);
+						} catch {
+							// URL activation is best-effort.
+						}
+					}
+					this.requestRender();
+					return;
 				}
-				this.requestRender();
-				return;
 			}
 			this.copySelectionToClipboard();
 			this.requestRender();
@@ -870,6 +882,27 @@ export class TuiAltScreen extends TuiBase implements ViewportTUI {
 		return { start: Math.max(minColumn, start), end: Math.min(maxColumn, end) };
 	}
 
+	private executeCopyAction(action: TerminalCopyAction): void {
+		if (!action.copy) {
+			this.copyTextToClipboard(action.text);
+			return;
+		}
+		void (async () => {
+			try {
+				await action.copy?.(action.text);
+				this.flash("Copied!");
+			} catch {
+				this.flash("Copy failed");
+			}
+		})();
+	}
+
+	private copyTextToClipboard(text: string): void {
+		if (text.length === 0) return;
+		this.terminal.write(`\x1b]52;c;${Buffer.from(text).toString("base64")}\x07`);
+		this.flash("Copied!");
+	}
+
 	private copySelectionToClipboard(): void {
 		const selection = this.getSelectionBounds();
 		if (!selection) return;
@@ -890,10 +923,7 @@ export class TuiAltScreen extends TuiBase implements ViewportTUI {
 				).trimEnd(),
 			);
 		}
-		const text = lines.join("\n");
-		if (text.length === 0) return;
-		this.terminal.write(`\x1b]52;c;${Buffer.from(text).toString("base64")}\x07`);
-		this.flash("Copied!");
+		this.copyTextToClipboard(lines.join("\n"));
 	}
 
 	private applySelectionHighlight(text: string): string {

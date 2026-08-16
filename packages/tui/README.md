@@ -426,12 +426,20 @@ interface DefaultTextStyle {
   underline?: boolean;
 }
 
+interface MarkdownOptions {
+  // true uses OSC 52; a callback can write through the host application's clipboard backend
+  codeBlockCopy?: boolean | ((text: string) => void | Promise<void>);
+}
+
+const options: MarkdownOptions = { codeBlockCopy: true };
+
 const md = new Markdown(
   "# Hello\n\nSome **bold** text",
   1,              // paddingX
   1,              // paddingY
   theme,          // MarkdownTheme
-  defaultStyle    // optional DefaultTextStyle
+  defaultStyle,   // optional DefaultTextStyle
+  options         // optional MarkdownOptions
 );
 md.setText("Updated markdown");
 ```
@@ -440,6 +448,7 @@ md.setText("Updated markdown");
 - Headings, bold, italic, code blocks, lists, links, blockquotes
 - HTML tags rendered as plain text
 - Optional syntax highlighting via `highlightCode`
+- Optional `codeBlockCopy` action for fenced `bash` blocks in `TuiAltScreen`, with an application clipboard callback or OSC 52 fallback
 - Padding support
 - Render caching for performance
 

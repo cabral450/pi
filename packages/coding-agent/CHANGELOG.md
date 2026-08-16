@@ -1,5 +1,15 @@
 # Changelog
 
+## [Unreleased]
+
+### Added
+
+- Added click-to-copy controls to finalized assistant `bash` code blocks in fullscreen TUI mode.
+
+### Fixed
+
+- Fixed fullscreen bash-block copy actions to use Pi's platform clipboard backend instead of reporting success immediately after an OSC 52 write.
+
 ## [0.84.1] - 2026-08-07
 
 ### New Features

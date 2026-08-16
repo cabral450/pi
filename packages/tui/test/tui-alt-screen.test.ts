@@ -2,6 +2,7 @@ import assert from "node:assert";
 import { describe, it } from "node:test";
 import { HStack } from "../src/components/h-stack.ts";
 import { Image } from "../src/components/image.ts";
+import { Markdown } from "../src/components/markdown.ts";
 import { ScrollView } from "../src/components/scroll-view.ts";
 import { Text } from "../src/components/text.ts";
 import { VStack } from "../src/components/v-stack.ts";
@@ -14,6 +15,7 @@ import {
 	setCapabilities,
 } from "../src/terminal-image.ts";
 import { TuiAltScreen } from "../src/tui-alt-screen.ts";
+import { defaultMarkdownTheme } from "./test-themes.ts";
 import { VirtualTerminal } from "./virtual-terminal.ts";
 
 const OSC133_ZONE_START = "\x1b]133;A\x07";
@@ -786,6 +788,64 @@ describe("TuiAltScreen", () => {
 		await terminal.waitForRender();
 		assert.deepStrictEqual(openedUrls, [url, belUrl, emojiUrl]);
 
+		tui.stop();
+	});
+
+	it("copies a finalized bash code block from its click action", async () => {
+		const terminal = new RecordingTerminal(30, 4);
+		const tui = new TuiAltScreen(terminal);
+		tui.addChild(
+			new Markdown("```bash\necho hello\n```", 0, 0, defaultMarkdownTheme, undefined, {
+				codeBlockCopy: true,
+			}),
+		);
+		tui.start();
+		await terminal.waitForRender();
+
+		assert.ok(terminal.getViewport()[0]?.includes("copy"));
+		terminal.sendInput("\x1b[<0;25;1M");
+		terminal.sendInput("\x1b[<0;25;1m");
+		await terminal.waitForRender();
+
+		const expectedClipboardSequence = `\x1b]52;c;${Buffer.from("echo hello").toString("base64")}\x07`;
+		assert.ok(
+			terminal.events.some((event) => event.type === "write" && event.data.includes(expectedClipboardSequence)),
+			JSON.stringify(terminal.events),
+		);
+		assert.ok(terminal.getViewport().some((line) => line.includes("Copied!")));
+
+		tui.stop();
+		const restoreEvent = terminal.events.find(
+			(event) => event.type === "write" && event.data.includes("\x1b[?1049l"),
+		);
+		assert.strictEqual(restoreEvent?.type, "write");
+		if (restoreEvent?.type === "write") {
+			assert.ok(!restoreEvent.data.includes("pi-tui://copy/"));
+			assert.ok(!restoreEvent.data.includes("copy"));
+		}
+	});
+
+	it("uses a code block copy callback instead of OSC 52 when provided", async () => {
+		const terminal = new RecordingTerminal(30, 4);
+		const copied: string[] = [];
+		const tui = new TuiAltScreen(terminal);
+		tui.addChild(
+			new Markdown("```bash\necho callback\n```", 0, 0, defaultMarkdownTheme, undefined, {
+				codeBlockCopy: async (text) => {
+					copied.push(text);
+				},
+			}),
+		);
+		tui.start();
+		await terminal.waitForRender();
+
+		terminal.sendInput("\x1b[<0;25;1M");
+		terminal.sendInput("\x1b[<0;25;1m");
+		await terminal.waitForRender();
+
+		assert.deepStrictEqual(copied, ["echo callback"]);
+		assert.ok(terminal.getViewport().some((line) => line.includes("Copied!")));
+		assert.ok(terminal.events.every((event) => event.type !== "write" || !event.data.includes("\x1b]52;c;")));
 		tui.stop();
 	});
 
