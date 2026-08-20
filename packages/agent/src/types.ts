@@ -144,7 +144,10 @@ export interface AgentLoopTurnUpdate {
 	thinkingLevel?: ThinkingLevel;
 }
 
-export interface PrepareNextTurnContext extends ShouldStopAfterTurnContext {}
+export interface PrepareNextTurnContext extends ShouldStopAfterTurnContext {
+	/** Whether the completed tool batch requires another provider request before queued messages are considered. */
+	willContinue: boolean;
+}
 
 export interface AgentLoopConfig extends SimpleStreamOptions {
 	model: Model<any>;

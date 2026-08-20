@@ -540,7 +540,27 @@ export class AgentSession {
 				: undefined);
 		this.agent.prepareNextTurnWithContext = async (turn, signal) => {
 			const previousSnapshot = await previousPrepareNextTurnWithContext?.(turn, signal);
-			const previousContext = previousSnapshot?.context ?? turn.context;
+			let previousContext = previousSnapshot?.context ?? turn.context;
+
+			if (turn.willContinue && this._extensionRunner.hasHandlers("before_model_call")) {
+				const previousCompactionId = getLatestCompactionEntry(this.sessionManager.getBranch())?.id;
+				const result = await this._extensionRunner.emitBeforeModelCall({
+					type: "before_model_call",
+					turnIndex: Math.max(0, this._turnIndex - 1),
+					message: turn.message,
+					toolResults: turn.toolResults,
+				});
+				if (result?.compact) {
+					await this._runAutoCompaction("threshold", false);
+					const latestCompaction = getLatestCompactionEntry(this.sessionManager.getBranch());
+					if (latestCompaction && latestCompaction.id !== previousCompactionId) {
+						previousContext = {
+							...previousContext,
+							messages: this.agent.state.messages.slice(),
+						};
+					}
+				}
+			}
 
 			return {
 				...previousSnapshot,

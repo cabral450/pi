@@ -228,6 +228,7 @@ async function runLoop(
 				toolResults,
 				context: currentContext,
 				newMessages,
+				willContinue: hasMoreToolCalls,
 			};
 			const nextTurnSnapshot = await config.prepareNextTurn?.(nextTurnContext);
 			if (nextTurnSnapshot) {

@@ -739,6 +739,14 @@ export interface TurnEndEvent {
 	toolResults: ToolResultMessage[];
 }
 
+/** Fired after a tool turn when another provider request would otherwise start. */
+export interface BeforeModelCallEvent {
+	type: "before_model_call";
+	turnIndex: number;
+	message: AgentMessage;
+	toolResults: ToolResultMessage[];
+}
+
 /** Fired when a message starts (user, assistant, or toolResult) */
 export interface MessageStartEvent {
 	type: "message_start";
@@ -1045,6 +1053,7 @@ export type ExtensionEvent =
 	| AgentSettledEvent
 	| TurnStartEvent
 	| TurnEndEvent
+	| BeforeModelCallEvent
 	| MessageStartEvent
 	| MessageUpdateEvent
 	| MessageEndEvent
@@ -1064,6 +1073,11 @@ export type ExtensionEvent =
 
 export interface ContextEventResult {
 	messages?: AgentMessage[];
+}
+
+export interface BeforeModelCallEventResult {
+	/** Request threshold compaction before the next provider call. */
+	compact?: boolean;
 }
 
 export type BeforeProviderRequestEventResult = unknown;
@@ -1230,6 +1244,7 @@ export interface ExtensionAPI {
 	on(event: "agent_settled", handler: ExtensionHandler<AgentSettledEvent>): void;
 	on(event: "turn_start", handler: ExtensionHandler<TurnStartEvent>): void;
 	on(event: "turn_end", handler: ExtensionHandler<TurnEndEvent>): void;
+	on(event: "before_model_call", handler: ExtensionHandler<BeforeModelCallEvent, BeforeModelCallEventResult>): void;
 	on(event: "message_start", handler: ExtensionHandler<MessageStartEvent>): void;
 	on(event: "message_update", handler: ExtensionHandler<MessageUpdateEvent>): void;
 	on(event: "message_end", handler: ExtensionHandler<MessageEndEvent, MessageEndEventResult>): void;

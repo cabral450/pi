@@ -34,6 +34,8 @@ contextTokens > contextWindow - reserveTokens
 
 By default, `reserveTokens` is 16384 tokens (configurable in `~/.pi/agent/settings.json` or `<project-dir>/.pi/settings.json`). This leaves room for the LLM's response.
 
+Extensions can also request threshold compaction between tool turns by returning `{ compact: true }` from `before_model_call`. Pi waits for the current tool batch to finish, appends the compaction checkpoint, rebuilds the active context, and only then polls queued steering messages or starts the next provider request.
+
 You can also trigger manually with `/compact [instructions]`, where optional instructions focus the summary.
 
 ### How It Works

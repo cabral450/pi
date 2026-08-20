@@ -1,5 +1,11 @@
 # Changelog
 
+## [Unreleased]
+
+### Added
+
+- Added `PrepareNextTurnContext.willContinue` so hosts can distinguish completed tool batches that require another provider request.
+
 ## [0.84.1] - 2026-08-07
 
 ### Added

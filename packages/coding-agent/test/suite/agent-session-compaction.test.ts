@@ -1,12 +1,15 @@
+import type { AgentTool } from "@earendil-works/pi-agent-core";
 import {
 	type AssistantMessage,
 	createAssistantMessageEventStream,
 	fauxAssistantMessage,
+	fauxToolCall,
 	type Model,
 } from "@earendil-works/pi-ai";
+import { Type } from "typebox";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { estimateTokens } from "../../src/core/compaction/index.ts";
-import { createHarness, getUserTexts, type Harness } from "./harness.ts";
+import { createHarness, getMessageText, getUserTexts, type Harness } from "./harness.ts";
 
 type SessionWithCompactionInternals = {
 	_checkCompaction: (assistantMessage: AssistantMessage, skipAbortedCheck?: boolean) => Promise<boolean>;
@@ -276,6 +279,87 @@ describe("AgentSession compaction characterization", () => {
 		expect(compactionEntries).toHaveLength(1);
 		expect(compactionEnd?.result?.estimatedTokensAfter).toBeGreaterThan(0);
 		expect(getStreamCallCount()).toBe(1);
+	});
+
+	it("compacts before the next model call in a long tool chain and preserves queued context", async () => {
+		let releaseTool: (() => void) | undefined;
+		let markToolStarted: (() => void) | undefined;
+		const toolStarted = new Promise<void>((resolve) => {
+			markToolStarted = resolve;
+		});
+		const toolRelease = new Promise<void>((resolve) => {
+			releaseTool = resolve;
+		});
+		const waitTool: AgentTool = {
+			name: "wait",
+			label: "Wait",
+			description: "Wait for queued context",
+			parameters: Type.Object({}),
+			execute: async () => {
+				markToolStarted?.();
+				await toolRelease;
+				return {
+					content: [{ type: "text", text: "queued tool result survives" }],
+					details: {},
+				};
+			},
+		};
+		let settledCount = 0;
+		const harness = await createHarness({
+			models: [{ id: "faux-1", contextWindow: 1000, maxTokens: 100 }],
+			settings: { compaction: { keepRecentTokens: 100, reserveTokens: 0 } },
+			tools: [waitTool],
+			extensionFactories: [
+				(pi) => {
+					pi.on("before_model_call", (_event, ctx) => {
+						if ((ctx.getContextUsage()?.percent ?? 0) >= 80) return { compact: true };
+					});
+					pi.on("session_before_compact", async (event) => ({
+						compaction: {
+							summary: "pre-model compacted",
+							firstKeptEntryId: event.preparation.firstKeptEntryId,
+							tokensBefore: event.preparation.tokensBefore,
+							details: {},
+						},
+					}));
+					pi.on("agent_settled", () => {
+						settledCount++;
+					});
+				},
+			],
+		});
+		harnesses.push(harness);
+		harness.setResponses([fauxAssistantMessage("old context ".repeat(300))]);
+		await harness.session.prompt("old prompt ".repeat(300));
+		settledCount = 0;
+
+		const pressureResponse = fauxAssistantMessage(fauxToolCall("wait", {}), { stopReason: "toolUse" });
+		pressureResponse.usage = createUsage(810);
+		let secondCallRoles: string[] = [];
+		let secondCallTexts: string[] = [];
+		harness.setResponses([
+			pressureResponse,
+			(context) => {
+				secondCallRoles = context.messages.map((message) => message.role);
+				secondCallTexts = context.messages.map(getMessageText);
+				expect(settledCount).toBe(0);
+				expect(harness.sessionManager.getEntries().filter((entry) => entry.type === "compaction")).toHaveLength(1);
+				return fauxAssistantMessage("done after compaction");
+			},
+		]);
+
+		const promptPromise = harness.session.prompt("start tool chain");
+		await toolStarted;
+		await harness.session.steer("queued guidance");
+		releaseTool?.();
+		await promptPromise;
+
+		expect(secondCallRoles).toContain("toolResult");
+		expect(secondCallTexts).toContain("queued tool result survives");
+		expect(secondCallTexts).toContain("queued guidance");
+		expect(harness.session.messages.some((message) => message.role === "toolResult")).toBe(true);
+		expect(harness.session.getLastAssistantText()).toBe("done after compaction");
+		expect(settledCount).toBe(1);
 	});
 
 	it("compacts and resumes after a length stop below the desired output limit", async () => {

@@ -15,6 +15,8 @@ import type { BuildSystemPromptOptions } from "../system-prompt.ts";
 import type {
 	BeforeAgentStartEvent,
 	BeforeAgentStartEventResult,
+	BeforeModelCallEvent,
+	BeforeModelCallEventResult,
 	BeforeProviderHeadersEvent,
 	BeforeProviderRequestEvent,
 	CompactOptions,
@@ -830,6 +832,34 @@ export class ExtensionRunner {
 		}
 
 		return result as RunnerEmitResult<TEvent>;
+	}
+
+	async emitBeforeModelCall(event: BeforeModelCallEvent): Promise<BeforeModelCallEventResult | undefined> {
+		const ctx = this.createContext();
+		let compact = false;
+
+		for (const ext of this.extensions) {
+			const handlers = ext.handlers.get("before_model_call");
+			if (!handlers || handlers.length === 0) continue;
+
+			for (const handler of handlers) {
+				try {
+					const handlerResult = (await handler(event, ctx)) as BeforeModelCallEventResult | undefined;
+					compact ||= handlerResult?.compact === true;
+				} catch (err) {
+					const message = err instanceof Error ? err.message : String(err);
+					const stack = err instanceof Error ? err.stack : undefined;
+					this.emitError({
+						extensionPath: ext.path,
+						event: "before_model_call",
+						error: message,
+						stack,
+					});
+				}
+			}
+		}
+
+		return compact ? { compact: true } : undefined;
 	}
 
 	async emitMessageEnd(event: MessageEndEvent): Promise<AgentMessage | undefined> {

@@ -306,7 +306,8 @@ user sends prompt ────────────────────�
   │   │     ├─► tool_result (can modify)           │       │
   │   │     └─► tool_execution_end                 │       │
   │   │                                            │       │
-  │   └─► turn_end                                 │       │
+  │   ├─► turn_end                                 │       │
+  │   └─► before_model_call (tool continuation)    │       │
   │                                                        │
   ├─► agent_end                                            │
   └─► agent_settled (no retry/compaction/follow-up left)   │
@@ -571,9 +572,9 @@ pi.on("agent_settled", async (_event, ctx) => {
 });
 ```
 
-#### turn_start / turn_end
+#### turn_start / turn_end / before_model_call
 
-Fired for each turn (one LLM response + tool calls).
+`turn_start` and `turn_end` fire for each turn (one LLM response plus tool calls). `before_model_call` fires after a completed tool batch when the agent would otherwise start another provider request. It can return `{ compact: true }` to append threshold compaction and rebuild the next-turn context first. Finalized tool results and queued steering/follow-up messages are preserved.
 
 ```typescript
 pi.on("turn_start", async (event, ctx) => {
@@ -582,6 +583,13 @@ pi.on("turn_start", async (event, ctx) => {
 
 pi.on("turn_end", async (event, ctx) => {
   // event.turnIndex, event.message, event.toolResults
+});
+
+pi.on("before_model_call", async (event, ctx) => {
+  // event.turnIndex, event.message, event.toolResults
+  if ((ctx.getContextUsage()?.percent ?? 0) >= 80) {
+    return { compact: true };
+  }
 });
 ```
 

@@ -4,6 +4,7 @@
 
 ### Added
 
+- Added `before_model_call` extension guards that can compact completed tool turns before the next provider request while preserving queued messages.
 - Added click-to-copy controls to finalized assistant `bash` code blocks in fullscreen TUI mode.
 
 ### Fixed
