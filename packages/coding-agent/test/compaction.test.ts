@@ -1,13 +1,16 @@
 import type { AgentMessage } from "@earendil-works/pi-agent-core";
+import { createAssistantMessageEventStream } from "@earendil-works/pi-ai";
 import type { AssistantMessage, Usage } from "@earendil-works/pi-ai/compat";
 import { getModel } from "@earendil-works/pi-ai/compat";
 import { readFileSync } from "fs";
 import { join } from "path";
 import { beforeEach, describe, expect, it } from "vitest";
 import {
+	type CompactionPreparation,
 	type CompactionSettings,
 	calculateContextTokens,
 	compact,
+	createFileOps,
 	DEFAULT_COMPACTION_SETTINGS,
 	estimateContextTokens,
 	findCutPoint,
@@ -355,6 +358,37 @@ describe("findCutPoint", () => {
 		}
 	});
 
+	it("keeps an oversized trailing tool result with its assistant tool call", () => {
+		const toolCall = createAssistantMessage("");
+		toolCall.content = [{ type: "toolCall", id: "call-1", name: "read", arguments: {} }];
+		const toolResult: AgentMessage = {
+			role: "toolResult",
+			toolCallId: "call-1",
+			toolName: "read",
+			content: [{ type: "text", text: "x".repeat(20_000) }],
+			isError: false,
+			timestamp: Date.now(),
+		};
+		const entries: SessionEntry[] = [
+			createMessageEntry(createUserMessage("old turn")),
+			createMessageEntry(createAssistantMessage("old answer")),
+			createMessageEntry(createUserMessage("read the file")),
+			createMessageEntry(toolCall),
+			createMessageEntry(toolResult),
+		];
+
+		const preparation = prepareCompaction(entries, {
+			enabled: true,
+			reserveTokens: 0,
+			keepRecentTokens: 1,
+		});
+
+		expect(preparation).toBeDefined();
+		expect(preparation?.firstKeptEntryId).toBe(entries[3].id);
+		expect(preparation?.isSplitTurn).toBe(true);
+		expect(preparation?.turnPrefixMessages).toHaveLength(1);
+	});
+
 	it("should budget context-visible custom message entries", () => {
 		const entries: SessionEntry[] = [
 			createMessageEntry(createUserMessage("hi")),
@@ -372,6 +406,46 @@ describe("findCutPoint", () => {
 		expect(customFitsBudget.firstKeptEntryIndex).toBe(2);
 		expect(customFitsBudget.isSplitTurn).toBe(false);
 		expect(customFitsBudget.turnStartIndex).toBe(-1);
+	});
+});
+
+describe("compact", () => {
+	it("carries the previous checkpoint into split-turn prefix summarization", async () => {
+		const previousSummary = "Durable facts from the previous checkpoint";
+		const preparation: CompactionPreparation = {
+			firstKeptEntryId: "kept-entry",
+			messagesToSummarize: [],
+			turnPrefixMessages: [createAssistantMessage("partial current turn")],
+			isSplitTurn: true,
+			tokensBefore: 1_000,
+			previousSummary,
+			fileOps: createFileOps(),
+			settings: DEFAULT_COMPACTION_SETTINGS,
+		};
+		const model = getModel("anthropic", "claude-sonnet-4-5")!;
+		const prompts: string[] = [];
+
+		const result = await compact(
+			preparation,
+			model,
+			"test-key",
+			undefined,
+			undefined,
+			undefined,
+			"off",
+			(_model, context) => {
+				prompts.push(extractText(context.messages as AgentMessage[]));
+				const stream = createAssistantMessageEventStream();
+				queueMicrotask(() => {
+					stream.push({ type: "done", reason: "stop", message: createAssistantMessage("updated turn prefix") });
+				});
+				return stream;
+			},
+		);
+
+		expect(prompts).toHaveLength(1);
+		expect(result.summary).toContain(previousSummary);
+		expect(result.summary).not.toContain("No prior history.");
 	});
 });
 

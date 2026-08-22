@@ -323,6 +323,7 @@ export type ReadonlySessionManager = Pick<
 	| "getLabel"
 	| "getBranch"
 	| "buildContextEntries"
+	| "buildSessionContext"
 	| "getHeader"
 	| "getEntries"
 	| "getTree"
@@ -569,7 +570,7 @@ export function buildContextEntries(
 		if (entry.id === compaction.firstKeptEntryId) {
 			foundFirstKept = true;
 		}
-		if (foundFirstKept) {
+		if (foundFirstKept && entry.type !== "compaction") {
 			contextEntries.push(entry);
 		}
 	}

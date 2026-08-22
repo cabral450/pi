@@ -427,9 +427,11 @@ export function findCutPoint(
 
 		// Check if we've exceeded the budget
 		if (accumulatedTokens >= keepRecentTokens) {
-			// Find the closest valid cut point at or after this entry
-			for (let c = 0; c < cutPoints.length; c++) {
-				if (cutPoints[c] >= i) {
+			// Keep the over-budget entry and everything after it. Tool results are
+			// not legal cut points, so move back to the assistant tool call that
+			// owns them rather than falling forward past the result.
+			for (let c = cutPoints.length - 1; c >= 0; c--) {
+				if (cutPoints[c] <= i) {
 					cutIndex = cutPoints[c];
 					break;
 				}
@@ -843,7 +845,7 @@ export async function compact(
 	let summaryUsage: Usage;
 
 	if (isSplitTurn && turnPrefixMessages.length > 0) {
-		let historyText = "No prior history.";
+		let historyText = previousSummary ?? "No prior history.";
 		let historyUsage: Usage | undefined;
 		if (messagesToSummarize.length > 0) {
 			const historyResult = await generateSummaryWithUsage(

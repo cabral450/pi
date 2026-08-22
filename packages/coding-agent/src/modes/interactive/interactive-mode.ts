@@ -2079,6 +2079,7 @@ export class InteractiveMode {
 				this.shutdownRequested = true;
 			},
 			getContextUsage: () => this.session.getContextUsage(),
+			getAutoCompactionEnabled: () => this.session.autoCompactionEnabled,
 			compact: (options) => {
 				void (async () => {
 					try {

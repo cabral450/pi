@@ -5,10 +5,14 @@
 ### Added
 
 - Added `before_model_call` extension guards that can compact completed tool turns before the next provider request while preserving queued messages.
+- Added `ctx.getAutoCompactionEnabled()` so proactive extensions can honor the session compaction setting.
 - Added click-to-copy controls to finalized assistant `bash` code blocks in fullscreen TUI mode.
 
 ### Fixed
 
+- Fixed compaction boundaries for oversized trailing tool results and repeated checkpoints so the latest summary is preserved exactly once.
+- Fixed concurrent manual compaction, failed-overflow retry state, extension-first local summaries, and exact `session_compact` entry identity.
+- Fixed `compaction.enabled: false` being bypassed by `before_model_call` compaction requests.
 - Fixed entering fullscreen mode invalidating the mounted component tree twice.
 - Fixed fullscreen bash-block copy actions to use Pi's platform clipboard backend instead of reporting success immediately after an OSC 52 write.
 

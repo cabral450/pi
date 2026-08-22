@@ -1055,6 +1055,16 @@ if (usage && usage.tokens > 100_000) {
 }
 ```
 
+### ctx.getAutoCompactionEnabled()
+
+Returns whether automatic context compaction is enabled for the current session. Extensions that request proactive compaction should honor this setting.
+
+```typescript
+if (ctx.getAutoCompactionEnabled() && (ctx.getContextUsage()?.percent ?? 0) >= 80) {
+  ctx.compact();
+}
+```
+
 ### ctx.compact()
 
 Trigger compaction without awaiting completion. Use `onComplete` and `onError` for follow-up actions.

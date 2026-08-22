@@ -326,6 +326,8 @@ export class AgentSession {
 	// Compaction state
 	private _compactionAbortController: AbortController | undefined = undefined;
 	private _autoCompactionAbortController: AbortController | undefined = undefined;
+	private _manualCompactionPromise: Promise<CompactionResult> | undefined;
+	private _manualCompactionIntent = false;
 	private _overflowRecoveryAttempted = false;
 
 	// Branch summarization state
@@ -550,7 +552,7 @@ export class AgentSession {
 					message: turn.message,
 					toolResults: turn.toolResults,
 				});
-				if (result?.compact) {
+				if (result?.compact && this.settingsManager.getCompactionEnabled()) {
 					await this._runAutoCompaction("threshold", false);
 					const latestCompaction = getLatestCompactionEntry(this.sessionManager.getBranch());
 					if (latestCompaction && latestCompaction.id !== previousCompactionId) {
@@ -899,9 +901,9 @@ export class AgentSession {
 		return this._isAgentRunActive;
 	}
 
-	/** Whether the session has no active agent run, retry, auto-compaction, or queued continuation. */
+	/** Whether the session has no active agent run or compaction work. */
 	get isIdle(): boolean {
-		return !this._isAgentRunActive;
+		return !this._isAgentRunActive && !this.isCompacting;
 	}
 
 	/** Current effective system prompt (includes any per-turn extension modifications) */
@@ -965,6 +967,7 @@ export class AgentSession {
 	/** Whether compaction or branch summarization is currently running */
 	get isCompacting(): boolean {
 		return (
+			this._manualCompactionIntent ||
 			this._autoCompactionAbortController !== undefined ||
 			this._compactionAbortController !== undefined ||
 			this._branchSummaryAbortController !== undefined
@@ -1150,7 +1153,7 @@ export class AgentSession {
 				}
 			}
 
-			if (this._compactionAbortController !== undefined) {
+			if (this._manualCompactionIntent || this._compactionAbortController !== undefined) {
 				throw new Error(
 					"Cannot submit a prompt while compaction is in progress. Wait for compaction to finish and retry.",
 				);
@@ -1226,6 +1229,10 @@ export class AgentSession {
 			// The user's new prompt is sent below, so do not call agent.continue() here.
 			const lastAssistant = this._findLastAssistantMessage();
 			if (lastAssistant) {
+				// A new user prompt starts a new recovery opportunity. Reset before
+				// the pre-prompt check so a failed prior compaction is retried before
+				// another oversized provider request.
+				this._overflowRecoveryAttempted = false;
 				await this._checkCompaction(lastAssistant, false);
 			}
 
@@ -1574,7 +1581,7 @@ export class AgentSession {
 	}
 
 	async waitForIdle(): Promise<void> {
-		if (this.isIdle) {
+		if (!this._isAgentRunActive) {
 			return;
 		}
 		await this._getIdleWaitPromise();
@@ -1808,6 +1815,24 @@ export class AgentSession {
 	 * @param customInstructions Optional instructions for the compaction summary
 	 */
 	async compact(customInstructions?: string): Promise<CompactionResult> {
+		if (this._manualCompactionPromise) {
+			return this._manualCompactionPromise;
+		}
+
+		this._manualCompactionIntent = true;
+		const promise = this._compact(customInstructions);
+		this._manualCompactionPromise = promise;
+		try {
+			return await promise;
+		} finally {
+			if (this._manualCompactionPromise === promise) {
+				this._manualCompactionPromise = undefined;
+			}
+			this._manualCompactionIntent = false;
+		}
+	}
+
+	private async _compact(customInstructions?: string): Promise<CompactionResult> {
 		await this.abort();
 		this._compactionAbortController = new AbortController();
 		this._emit({ type: "compaction_start", reason: "manual" });
@@ -1816,8 +1841,6 @@ export class AgentSession {
 			if (!this.model) {
 				throw new Error(formatNoModelSelectedMessage());
 			}
-
-			const { model: requestModel, apiKey, headers, env } = await this._getSummarizationRequestAuth(this.model);
 
 			const pathEntries = this.sessionManager.getBranch();
 			const settings = this.settingsManager.getCompactionSettings();
@@ -1870,7 +1893,9 @@ export class AgentSession {
 				usage = extensionCompaction.usage;
 				details = extensionCompaction.details;
 			} else {
-				// Generate compaction result
+				// Resolve provider auth only when no extension supplied a complete,
+				// network-free checkpoint.
+				const { model: requestModel, apiKey, headers, env } = await this._getSummarizationRequestAuth(this.model);
 				const result = await compact(
 					preparation,
 					requestModel,
@@ -1895,16 +1920,19 @@ export class AgentSession {
 				throw new Error("Compaction cancelled");
 			}
 
-			this.sessionManager.appendCompaction(summary, firstKeptEntryId, tokensBefore, details, fromExtension, usage);
-			const newEntries = this.sessionManager.getEntries();
+			const compactionEntryId = this.sessionManager.appendCompaction(
+				summary,
+				firstKeptEntryId,
+				tokensBefore,
+				details,
+				fromExtension,
+				usage,
+			);
 			const sessionContext = this.sessionManager.buildSessionContext();
 			this.agent.state.messages = sessionContext.messages;
 			const estimatedTokensAfter = estimateMessagesTokens(sessionContext.messages);
 
-			// Get the saved compaction entry for the extension event
-			const savedCompactionEntry = newEntries.find((e) => e.type === "compaction" && e.summary === summary) as
-				| CompactionEntry
-				| undefined;
+			const savedCompactionEntry = this.sessionManager.getEntry(compactionEntryId) as CompactionEntry | undefined;
 
 			if (this._extensionRunner && savedCompactionEntry) {
 				await this._extensionRunner.emit({
@@ -1926,6 +1954,7 @@ export class AgentSession {
 			};
 			// compaction_end listeners may submit queued prompts, so expose idle state before notifying them.
 			this._compactionAbortController = undefined;
+			this._manualCompactionIntent = false;
 			this._emit({
 				type: "compaction_end",
 				reason: "manual",
@@ -1938,6 +1967,7 @@ export class AgentSession {
 			const message = error instanceof Error ? error.message : String(error);
 			const aborted = message === "Compaction cancelled" || (error instanceof Error && error.name === "AbortError");
 			this._compactionAbortController = undefined;
+			this._manualCompactionIntent = false;
 			this._emit({
 				type: "compaction_end",
 				reason: "manual",
@@ -2038,7 +2068,16 @@ export class AgentSession {
 			if (messages.length > 0 && messages[messages.length - 1].role === "assistant") {
 				this.agent.state.messages = messages.slice(0, -1);
 			}
-			return await this._runAutoCompaction("overflow", willRetry);
+			const compacted = await this._runAutoCompaction("overflow", willRetry);
+			if (!compacted) {
+				// Keep the overflow signal in active state when recovery fails or is
+				// cancelled so the next prompt retries compaction before contacting
+				// the provider again.
+				if (!this.agent.state.messages.includes(assistantMessage)) {
+					this.agent.state.messages = [...this.agent.state.messages, assistantMessage];
+				}
+			}
+			return compacted;
 		}
 
 		// Case 2: Threshold - context is getting large
@@ -2083,8 +2122,6 @@ export class AgentSession {
 			if (!this.model) {
 				return false;
 			}
-
-			const { model: requestModel, apiKey, headers, env } = await this._getSummarizationRequestAuth(this.model);
 
 			const pathEntries = this.sessionManager.getBranch();
 
@@ -2142,7 +2179,9 @@ export class AgentSession {
 				usage = extensionCompaction.usage;
 				details = extensionCompaction.details;
 			} else {
-				// Generate compaction result
+				// Resolve provider auth only when no extension supplied a complete,
+				// network-free checkpoint.
+				const { model: requestModel, apiKey, headers, env } = await this._getSummarizationRequestAuth(this.model);
 				const compactResult = await compact(
 					preparation,
 					requestModel,
@@ -2174,16 +2213,19 @@ export class AgentSession {
 				return false;
 			}
 
-			this.sessionManager.appendCompaction(summary, firstKeptEntryId, tokensBefore, details, fromExtension, usage);
-			const newEntries = this.sessionManager.getEntries();
+			const compactionEntryId = this.sessionManager.appendCompaction(
+				summary,
+				firstKeptEntryId,
+				tokensBefore,
+				details,
+				fromExtension,
+				usage,
+			);
 			const sessionContext = this.sessionManager.buildSessionContext();
 			this.agent.state.messages = sessionContext.messages;
 			const estimatedTokensAfter = estimateMessagesTokens(sessionContext.messages);
 
-			// Get the saved compaction entry for the extension event
-			const savedCompactionEntry = newEntries.find((e) => e.type === "compaction" && e.summary === summary) as
-				| CompactionEntry
-				| undefined;
+			const savedCompactionEntry = this.sessionManager.getEntry(compactionEntryId) as CompactionEntry | undefined;
 
 			if (this._extensionRunner && savedCompactionEntry) {
 				await this._extensionRunner.emit({
@@ -2449,6 +2491,7 @@ export class AgentSession {
 					this._extensionShutdownHandler?.();
 				},
 				getContextUsage: () => this.getContextUsage(),
+				getAutoCompactionEnabled: () => this.autoCompactionEnabled,
 				compact: (options) => {
 					void (async () => {
 						try {
