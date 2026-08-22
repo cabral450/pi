@@ -2,9 +2,11 @@ import { complete, resetApiProviders } from "@earendil-works/pi-ai/compat";
 import { describe, expect, it, vi } from "vitest";
 import { AuthStorage } from "../src/core/auth-storage.ts";
 import { ModelRegistry } from "../src/core/model-registry.ts";
+import { defaultModelPerProvider } from "../src/core/model-resolver.ts";
 import { ModelRuntime } from "../src/core/model-runtime.ts";
 
 const openAIState = vi.hoisted(() => ({ clientOptions: undefined as unknown }));
+const CLOUDFLARE_COMPAT_MODEL_ID = defaultModelPerProvider["cloudflare-ai-gateway"];
 
 vi.mock("openai", () => {
 	class FakeOpenAI {
@@ -59,7 +61,7 @@ async function createCloudflareRuntime(): Promise<{ modelRuntime: ModelRuntime; 
 describe("ModelRegistry Cloudflare compat streaming", () => {
 	it("materializes the Cloudflare endpoint through ModelRuntime streaming", async () => {
 		const { modelRuntime } = await createCloudflareRuntime();
-		const model = modelRuntime.getModel("cloudflare-ai-gateway", "workers-ai/@cf/moonshotai/kimi-k2.5");
+		const model = modelRuntime.getModel("cloudflare-ai-gateway", CLOUDFLARE_COMPAT_MODEL_ID);
 		expect(model).toBeDefined();
 
 		resetApiProviders();
@@ -75,7 +77,7 @@ describe("ModelRegistry Cloudflare compat streaming", () => {
 
 	it("materializes the Cloudflare endpoint after extension-style auth resolution", async () => {
 		const { modelRegistry } = await createCloudflareRuntime();
-		const model = modelRegistry.find("cloudflare-ai-gateway", "workers-ai/@cf/moonshotai/kimi-k2.5");
+		const model = modelRegistry.find("cloudflare-ai-gateway", CLOUDFLARE_COMPAT_MODEL_ID);
 		expect(model).toBeDefined();
 
 		resetApiProviders();

@@ -833,7 +833,10 @@ export class InteractiveMode {
 		this.renderer = nextUi;
 		this.options.tuiMode = mode;
 		this.mountInteractiveTui(nextUi, components);
-		nextUi.invalidate();
+		// TuiAltScreen owns invalidation in beforeTerminalStart(). Avoid doing
+		// the same work twice when entering fullscreen, while still invalidating
+		// regular renderers and renderers that are intentionally not started.
+		if (!startRenderer || !TuiLayouts.isViewportTUI(nextUi)) nextUi.invalidate();
 		nextUi.setFocus(focus);
 		if (!startRenderer) return true;
 		nextUi.start();

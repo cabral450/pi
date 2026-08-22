@@ -9,6 +9,7 @@
 
 ### Fixed
 
+- Fixed entering fullscreen mode invalidating the mounted component tree twice.
 - Fixed fullscreen bash-block copy actions to use Pi's platform clipboard backend instead of reporting success immediately after an OSC 52 write.
 
 ## [0.84.1] - 2026-08-07
