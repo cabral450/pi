@@ -45,7 +45,8 @@ describe("issue #7253: manual compaction during an active response", () => {
 
 		const harness = await createHarness({
 			models: [{ id: "faux-1", contextWindow: 1000, maxTokens: 100 }],
-			settings: { compaction: { enabled: true, reserveTokens: 999, keepRecentTokens: 2 } },
+			// Automatic compaction is off so only the settled hook and the manual request compete.
+			settings: { compaction: { enabled: false, reserveTokens: 999, keepRecentTokens: 2 } },
 			tools: [createNoopTool()],
 			extensionFactories: [
 				(pi) => {
@@ -98,7 +99,7 @@ describe("issue #7253: manual compaction during an active response", () => {
 		expect(harness.sessionManager.getEntries().filter((entry) => entry.type === "compaction")).toHaveLength(1);
 	});
 
-	it("runs only the requested manual compaction when the previous turn crossed the threshold", async () => {
+	it("persists the aborted response before running the requested manual compaction", async () => {
 		let markSecondResponseStarted = () => {};
 		const secondResponseStarted = new Promise<void>((resolve) => {
 			markSecondResponseStarted = resolve;
@@ -109,8 +110,8 @@ describe("issue #7253: manual compaction during an active response", () => {
 		});
 
 		const harness = await createHarness({
-			models: [{ id: "faux-1", contextWindow: 1000, maxTokens: 100 }],
-			settings: { compaction: { enabled: true, reserveTokens: 999, keepRecentTokens: 2 } },
+			models: [{ id: "faux-1", contextWindow: 1000, maxTokens: 1000 }],
+			settings: { compaction: { enabled: true, reserveTokens: 200, keepRecentTokens: 2 } },
 			tools: [createNoopTool()],
 			extensionFactories: [
 				(pi) => {
@@ -131,7 +132,7 @@ describe("issue #7253: manual compaction during an active response", () => {
 			async () => {
 				markSecondResponseStarted();
 				await secondResponseReleased;
-				return fauxAssistantMessage("second response");
+				return fauxAssistantMessage(`second response:${"x".repeat(4000)}`);
 			},
 		]);
 
@@ -145,6 +146,14 @@ describe("issue #7253: manual compaction during an active response", () => {
 
 		expect(harness.eventsOfType("compaction_start").map((event) => event.reason)).toEqual(["manual"]);
 		expect(harness.eventsOfType("compaction_end").map((event) => event.reason)).toEqual(["manual"]);
-		expect(harness.sessionManager.getEntries().filter((entry) => entry.type === "compaction")).toHaveLength(1);
+		const entries = harness.sessionManager.getEntries();
+		const abortedResponseIndex = entries.findIndex(
+			(entry) =>
+				entry.type === "message" && entry.message.role === "assistant" && entry.message.stopReason === "aborted",
+		);
+		const compactionIndex = entries.findIndex((entry) => entry.type === "compaction");
+		expect(abortedResponseIndex).toBeGreaterThan(-1);
+		expect(compactionIndex).toBeGreaterThan(abortedResponseIndex);
+		expect(entries.filter((entry) => entry.type === "compaction")).toHaveLength(1);
 	});
 });

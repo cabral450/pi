@@ -46,8 +46,14 @@ export interface Keybindings {
 	"tui.altScreen.pageDown": true;
 	"tui.altScreen.halfPageUp": true;
 	"tui.altScreen.halfPageDown": true;
+	"tui.altScreen.lineUp": true;
+	"tui.altScreen.lineDown": true;
 	"tui.altScreen.previousPrompt": true;
 	"tui.altScreen.nextPrompt": true;
+	"tui.altScreen.search": true;
+	"tui.altScreen.searchNext": true;
+	"tui.altScreen.searchPrevious": true;
+	"tui.altScreen.searchClose": true;
 	"tui.altScreen.top": true;
 	"tui.altScreen.bottom": true;
 }
@@ -90,11 +96,11 @@ export const TUI_KEYBINDINGS = {
 		description: "Move cursor word right",
 	},
 	"tui.editor.cursorLineStart": {
-		defaultKeys: ["home", "ctrl+home", "ctrl+a"],
+		defaultKeys: ["home", "ctrl+a"],
 		description: "Move to line start",
 	},
 	"tui.editor.cursorLineEnd": {
-		defaultKeys: ["end", "ctrl+end", "ctrl+e"],
+		defaultKeys: ["end", "ctrl+e"],
 		description: "Move to line end",
 	},
 	"tui.editor.jumpForward": {
@@ -167,16 +173,40 @@ export const TUI_KEYBINDINGS = {
 		defaultKeys: [],
 		description: "Scroll viewport down half a page",
 	},
+	"tui.altScreen.lineUp": {
+		defaultKeys: [],
+		description: "Scroll viewport up one line",
+	},
+	"tui.altScreen.lineDown": {
+		defaultKeys: [],
+		description: "Scroll viewport down one line",
+	},
 	"tui.altScreen.previousPrompt": {
-		defaultKeys: "ctrl+shift+up",
+		defaultKeys: ["ctrl+shift+up", "ctrl+up"],
 		description: "Jump to previous semantic prompt",
 	},
 	"tui.altScreen.nextPrompt": {
-		defaultKeys: "ctrl+shift+down",
+		defaultKeys: ["ctrl+shift+down", "ctrl+down"],
 		description: "Jump to next semantic prompt",
 	},
-	"tui.altScreen.top": { defaultKeys: "home", description: "Scroll viewport to top" },
-	"tui.altScreen.bottom": { defaultKeys: "end", description: "Scroll viewport to bottom" },
+	"tui.altScreen.search": {
+		defaultKeys: "ctrl+shift+f",
+		description: "Search the primary scroll view",
+	},
+	"tui.altScreen.searchNext": {
+		defaultKeys: ["enter", "ctrl+g"],
+		description: "Select the next search match",
+	},
+	"tui.altScreen.searchPrevious": {
+		defaultKeys: ["shift+enter", "ctrl+shift+g"],
+		description: "Select the previous search match",
+	},
+	"tui.altScreen.searchClose": {
+		defaultKeys: "escape",
+		description: "Close transcript search",
+	},
+	"tui.altScreen.top": { defaultKeys: "ctrl+home", description: "Scroll viewport to top" },
+	"tui.altScreen.bottom": { defaultKeys: "ctrl+end", description: "Scroll viewport to bottom" },
 } as const satisfies KeybindingDefinitions;
 
 export interface KeybindingConflict {

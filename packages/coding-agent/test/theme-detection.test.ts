@@ -1,11 +1,9 @@
-import { type RgbColor, resetCapabilitiesCache, setCapabilities } from "@earendil-works/pi-tui";
+import { resetCapabilitiesCache, setCapabilities } from "@earendil-works/pi-tui";
 import { afterEach, describe, expect, it } from "vitest";
 import {
-	detectTerminalBackgroundFromEnv,
-	detectTerminalBackgroundTheme,
-	detectTerminalThemeForAuto,
+	detectColorFgBgTheme,
+	detectTerminalTheme,
 	getThemeByName,
-	getThemeForRgbColor,
 	parseAutoThemeSetting,
 	resolveThemeSetting,
 } from "../src/modes/interactive/theme/theme.ts";
@@ -30,129 +28,34 @@ function withEnv<T>(values: Record<string, string | undefined>, run: () => T): T
 	}
 }
 
-describe("detectTerminalBackgroundFromEnv", () => {
-	it("uses the COLORFGBG background color index", () => {
-		expect(detectTerminalBackgroundFromEnv({ env: { COLORFGBG: "0;15" } })).toMatchObject({
-			theme: "light",
-			source: "COLORFGBG",
-			confidence: "high",
-		});
-		expect(detectTerminalBackgroundFromEnv({ env: { COLORFGBG: "15;0" } })).toMatchObject({
-			theme: "dark",
-			source: "COLORFGBG",
-			confidence: "high",
-		});
-	});
-
-	it("uses the last COLORFGBG field as the background", () => {
-		expect(detectTerminalBackgroundFromEnv({ env: { COLORFGBG: "0;7;15" } }).theme).toBe("light");
-	});
-
-	it("defaults to dark without terminal background hints", () => {
-		expect(detectTerminalBackgroundFromEnv({ env: {} })).toMatchObject({
-			theme: "dark",
-			source: "fallback",
-			confidence: "low",
-		});
+describe("detectColorFgBgTheme", () => {
+	it("classifies the last field by palette index like Vim", () => {
+		expect(detectColorFgBgTheme({ COLORFGBG: "15;0" })).toBe("dark");
+		expect(detectColorFgBgTheme({ COLORFGBG: "0;7;15" })).toBe("light");
+		// Solarized Dark's background is bright black.
+		expect(detectColorFgBgTheme({ COLORFGBG: "12;8" })).toBe("dark");
+		// rxvt writes "default" when the background is not a palette color.
+		expect(detectColorFgBgTheme({ COLORFGBG: "15;default" })).toBeUndefined();
+		expect(detectColorFgBgTheme({})).toBeUndefined();
 	});
 });
 
-describe("detectTerminalBackgroundTheme", () => {
-	it("uses the queried terminal background before environment hints", async () => {
-		let queriedTimeoutMs: number | undefined;
-		const detection = await detectTerminalBackgroundTheme({
-			env: { COLORFGBG: "15;0" },
-			timeoutMs: 250,
-			ui: {
-				async queryTerminalBackgroundColor({ timeoutMs }: { timeoutMs: number }): Promise<RgbColor | undefined> {
-					queriedTimeoutMs = timeoutMs;
-					return { r: 250, g: 250, b: 250 };
-				},
-			},
-		});
-
-		expect(queriedTimeoutMs).toBe(250);
-		expect(detection).toMatchObject({
-			theme: "light",
-			source: "terminal background",
-			confidence: "high",
-		});
+describe("detectTerminalTheme", () => {
+	it("prefers the background, then the reported scheme, then COLORFGBG, then dark", () => {
+		const env = { COLORFGBG: "0;15" };
+		expect(detectTerminalTheme({ background: { r: 8, g: 8, b: 8 } }, "light", env)).toBe("dark");
+		expect(detectTerminalTheme({}, "dark", env)).toBe("dark");
+		expect(detectTerminalTheme({}, undefined, env)).toBe("light");
+		expect(detectTerminalTheme({}, undefined, {})).toBe("dark");
 	});
 
-	it("falls back to environment hints when the terminal query returns no color", async () => {
-		const detection = await detectTerminalBackgroundTheme({
-			env: { COLORFGBG: "15;0" },
-			timeoutMs: 250,
-			ui: {
-				async queryTerminalBackgroundColor(): Promise<RgbColor | undefined> {
-					return undefined;
-				},
-			},
-		});
-
-		expect(detection).toMatchObject({
-			theme: "dark",
-			source: "COLORFGBG",
-			confidence: "high",
-		});
-	});
-
-	it("falls back to environment hints when the terminal query fails", async () => {
-		const detection = await detectTerminalBackgroundTheme({
-			env: { COLORFGBG: "0;15" },
-			timeoutMs: 250,
-			ui: {
-				async queryTerminalBackgroundColor(): Promise<RgbColor | undefined> {
-					throw new Error("terminal write failed");
-				},
-			},
-		});
-
-		expect(detection).toMatchObject({
-			theme: "light",
-			source: "COLORFGBG",
-			confidence: "high",
-		});
-	});
-});
-
-describe("detectTerminalThemeForAuto", () => {
-	it("starts both queries and returns the preferred color-scheme result without waiting", async () => {
-		let resolveColorScheme!: (theme: "dark" | "light" | undefined) => void;
-		let backgroundQueryStarted = false;
-		const detection = detectTerminalThemeForAuto({
-			timeoutMs: 100,
-			ui: {
-				queryTerminalColorScheme: () =>
-					new Promise((resolve) => {
-						resolveColorScheme = resolve;
-					}),
-				queryTerminalBackgroundColor: () => {
-					backgroundQueryStarted = true;
-					return new Promise<RgbColor | undefined>(() => {});
-				},
-			},
-		});
-
-		expect(backgroundQueryStarted).toBe(true);
-		resolveColorScheme("dark");
-		await expect(detection).resolves.toBe("dark");
-	});
-
-	it("uses the background result when the color-scheme query fails", async () => {
-		await expect(
-			detectTerminalThemeForAuto({
-				timeoutMs: 100,
-				ui: {
-					async queryTerminalColorScheme(): Promise<undefined> {
-						throw new Error("color-scheme query failed");
-					},
-					async queryTerminalBackgroundColor(): Promise<RgbColor> {
-						return { r: 250, g: 250, b: 250 };
-					},
-				},
-			}),
-		).resolves.toBe("light");
+	it("follows the foreground when text is readable that way", () => {
+		const background = { r: 118, g: 118, b: 118 };
+		expect(detectTerminalTheme({ background })).toBe("light");
+		expect(detectTerminalTheme({ background, foreground: { r: 255, g: 255, b: 255 } })).toBe("dark");
+		// White text cannot reach 4.5:1 on mid-gray.
+		const midGray = { r: 128, g: 128, b: 128 };
+		expect(detectTerminalTheme({ background: midGray, foreground: { r: 255, g: 255, b: 255 } })).toBe("light");
 	});
 });
 
@@ -173,9 +76,9 @@ describe("theme color mode", () => {
 		});
 	});
 
-	it("trusts TERM rather than inherited COLORTERM inside multiplexers", () => {
-		setCapabilities({ images: null, trueColor: true, hyperlinks: false });
+	it("does not trust inherited COLORTERM inside basic-color multiplexers", () => {
 		withEnv({ TERM: "screen", TMUX: "1", STY: undefined, COLORTERM: "truecolor", PI_COLOR_MODE: undefined }, () => {
+			resetCapabilitiesCache();
 			const ansi16Theme = getThemeByName("dark");
 			if (!ansi16Theme) throw new Error("dark theme not found");
 			expect(ansi16Theme.getColorMode()).toBe("ansi16");
@@ -183,8 +86,9 @@ describe("theme color mode", () => {
 		});
 
 		withEnv(
-			{ TERM: "screen-256color", TMUX: "1", STY: undefined, COLORTERM: "truecolor", PI_COLOR_MODE: undefined },
+			{ TERM: "screen-256color", TMUX: "1", STY: undefined, COLORTERM: undefined, PI_COLOR_MODE: undefined },
 			() => {
+				resetCapabilitiesCache();
 				const ansi256Theme = getThemeByName("dark");
 				if (!ansi256Theme) throw new Error("dark theme not found");
 				expect(ansi256Theme.getColorMode()).toBe("256color");
@@ -199,13 +103,6 @@ describe("theme color mode", () => {
 			if (!theme) throw new Error("dark theme not found");
 			expect(theme.getColorMode()).toBe("truecolor");
 		});
-	});
-});
-
-describe("theme detection from RGB", () => {
-	it("classifies RGB colors by luminance", () => {
-		expect(getThemeForRgbColor({ r: 8, g: 8, b: 8 })).toBe("dark");
-		expect(getThemeForRgbColor({ r: 250, g: 250, b: 250 })).toBe("light");
 	});
 });
 

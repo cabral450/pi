@@ -1,5 +1,5 @@
-import type { Component } from "../tui.ts";
-import { applyBackgroundToLine, visibleWidth } from "../utils.ts";
+import { type Component, dispatchMouseEvent, type TuiMouseDispatchResult, type TuiMouseEvent } from "../tui.ts";
+import { flattenLines, visibleWidth } from "../utils.ts";
 
 type RenderCache = {
 	childComponents: Component[];
@@ -21,6 +21,7 @@ export class Box implements Component {
 
 	// Cache for rendered output
 	private cache?: RenderCache;
+	private mouseLayout?: { width: number; children: Array<{ component: Component; height: number }> };
 
 	constructor(paddingX = 1, paddingY = 1, bgFn?: (text: string) => string) {
 		this.paddingX = paddingX;
@@ -49,6 +50,11 @@ export class Box implements Component {
 	setBgFn(bgFn?: (text: string) => string): void {
 		this.bgFn = bgFn;
 		// Don't invalidate here - we'll detect bgFn changes by sampling output
+	}
+
+	setPaddingX(paddingX: number): void {
+		this.paddingX = paddingX;
+		this.invalidateCache();
 	}
 
 	private invalidateCache(): void {
@@ -86,6 +92,32 @@ export class Box implements Component {
 		}
 	}
 
+	handleMouse(event: TuiMouseEvent): TuiMouseDispatchResult | undefined {
+		const contentWidth = Math.max(1, event.width - this.paddingX * 2);
+		const contentY = event.y - this.paddingY;
+		const contentX = event.x - this.paddingX;
+		if (contentY < 0 || contentX < 0 || contentX >= contentWidth) return undefined;
+
+		const mouseChildren =
+			this.mouseLayout?.width === contentWidth
+				? this.mouseLayout.children
+				: this.children.map((component) => ({ component, height: component.render(contentWidth).length }));
+		let childY = 0;
+		for (const { component: child, height: childHeight } of mouseChildren) {
+			if (contentY >= childY && contentY < childY + childHeight) {
+				return dispatchMouseEvent(child, {
+					...event,
+					x: contentX,
+					y: contentY - childY,
+					width: contentWidth,
+					height: childHeight,
+				});
+			}
+			childY += childHeight;
+		}
+		return undefined;
+	}
+
 	render(width: number): string[] {
 		if (this.children.length === 0) {
 			return [];
@@ -97,7 +129,12 @@ export class Box implements Component {
 		// Cached TUI components replace their output array when content changes.
 		const childChunks = this.children.map((child) => child.render(contentWidth));
 		const bgSample = this.bgFn ? this.bgFn("test") : undefined;
+		const mouseChildren = this.children.map((component, index) => ({
+			component,
+			height: childChunks[index]!.length,
+		}));
 		if (this.matchCacheByIdentity(width, childChunks, bgSample)) {
+			this.mouseLayout = { width: contentWidth, children: mouseChildren };
 			return this.cache!.lines;
 		}
 
@@ -105,9 +142,10 @@ export class Box implements Component {
 		const childLines: string[] = [];
 		for (const lines of childChunks) {
 			for (const line of lines) {
-				childLines.push(leftPad + line);
+				childLines.push(line);
 			}
 		}
+		this.mouseLayout = { width: contentWidth, children: mouseChildren };
 
 		if (childLines.length === 0) {
 			return [];
@@ -131,7 +169,7 @@ export class Box implements Component {
 
 		// Content
 		for (const line of childLines) {
-			result.push(this.applyBg(line, width));
+			result.push(this.applyBg(leftPad + line, width));
 		}
 
 		// Bottom padding
@@ -140,6 +178,7 @@ export class Box implements Component {
 		}
 
 		// Update cache
+		flattenLines(result);
 		this.cache = {
 			childComponents: [...this.children],
 			childChunks,
@@ -156,10 +195,7 @@ export class Box implements Component {
 		const visLen = visibleWidth(line);
 		const padNeeded = Math.max(0, width - visLen);
 		const padded = line + " ".repeat(padNeeded);
-
-		if (this.bgFn) {
-			return applyBackgroundToLine(padded, width, this.bgFn);
-		}
-		return padded;
+		// Already padded to width, so apply the background directly instead of measuring the line again.
+		return this.bgFn ? this.bgFn(padded) : padded;
 	}
 }

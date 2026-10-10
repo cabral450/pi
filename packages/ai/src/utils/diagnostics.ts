@@ -1,3 +1,5 @@
+import type { JsonObject } from "../types.ts";
+
 export interface DiagnosticErrorInfo {
 	name?: string;
 	message: string;
@@ -11,7 +13,7 @@ export interface AssistantMessageDiagnostic {
 	type: string;
 	timestamp: number;
 	error?: DiagnosticErrorInfo;
-	details?: Record<string, unknown>;
+	details?: JsonObject;
 }
 
 export function formatThrownValue(value: unknown): string {
@@ -44,7 +46,7 @@ export function extractDiagnosticError(error: unknown): DiagnosticErrorInfo {
 export function createAssistantMessageDiagnostic(
 	type: string,
 	error: unknown,
-	details?: Record<string, unknown>,
+	details?: JsonObject,
 ): AssistantMessageDiagnostic {
 	return { type, timestamp: Date.now(), error: extractDiagnosticError(error), details };
 }
