@@ -170,6 +170,7 @@ export {
 	type OverlayUnfocusOptions,
 	type ResizeRedrawContext,
 	type ResizeRedrawProvider,
+	renderFakeCursor,
 	type SizeValue,
 	type TUI,
 	type TuiInputListener,

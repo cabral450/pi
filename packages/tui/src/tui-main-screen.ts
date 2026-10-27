@@ -126,6 +126,7 @@ export class TuiMainScreen extends TuiBase implements TUI {
 	private previousLines: string[] = [];
 	private previousRenderComponents: TUI["children"] = [];
 	private previousRenderChunks: string[][] = [];
+	private previousRenderHardwareCursor: boolean | undefined;
 	private previousCursorPosition: { row: number; col: number } | null = null;
 	private previousKittyImageIds = new Set<number>();
 	private previousWidth = 0;
@@ -156,6 +157,7 @@ export class TuiMainScreen extends TuiBase implements TUI {
 		this.previousLines = state.previousLines.map((line) => (isImageLine(line) ? "" : line));
 		this.previousRenderComponents = [];
 		this.previousRenderChunks = [];
+		this.previousRenderHardwareCursor = undefined;
 		this.previousCursorPosition = null;
 		this.previousKittyImageIds = new Set();
 		this.previousWidth = state.previousWidth;
@@ -170,6 +172,7 @@ export class TuiMainScreen extends TuiBase implements TUI {
 		this.previousLines = [];
 		this.previousRenderComponents = [];
 		this.previousRenderChunks = [];
+		this.previousRenderHardwareCursor = undefined;
 		this.previousCursorPosition = null;
 		this.previousWidth = -1;
 		this.previousHeight = -1;
@@ -291,6 +294,7 @@ export class TuiMainScreen extends TuiBase implements TUI {
 		const canReusePrefix =
 			!widthChanged &&
 			!this.hasOverlayEntries &&
+			this.previousRenderHardwareCursor === this.getShowHardwareCursor() &&
 			this.previousRenderComponents.length === this.children.length &&
 			this.previousRenderChunks.length === renderedChildren.length;
 		if (canReusePrefix) {
@@ -308,12 +312,15 @@ export class TuiMainScreen extends TuiBase implements TUI {
 			reusedPrefixLines = 0;
 		}
 
+		// Reused prefix lines were resolved and reset by the render that produced them, so only
+		// freshly rendered chunks resolve fake cursors here.
 		let newLines = reusedPrefixLines > 0 ? this.previousLines.slice(0, reusedPrefixLines) : [];
 		for (let i = firstChangedChild; i < renderedChildren.length; i++) {
-			for (const line of renderedChildren[i]!) newLines.push(line);
+			for (const line of this.resolveFakeCursors(renderedChildren[i]!)) newLines.push(line);
 		}
 		this.previousRenderComponents = [...this.children];
 		this.previousRenderChunks = renderedChildren;
+		this.previousRenderHardwareCursor = this.getShowHardwareCursor();
 
 		// Composite overlays into the rendered lines (before differential compare)
 		if (this.hasOverlayEntries) {
