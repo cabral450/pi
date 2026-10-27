@@ -1,5 +1,21 @@
 # Changelog
 
+## [Unreleased]
+
+### Added
+
+- Added `before_model_call` extension guards that can compact completed tool turns before the next provider request while preserving queued messages.
+- Added `ctx.getAutoCompactionEnabled()` so proactive extensions can honor the session compaction setting.
+- Added click-to-copy controls to finalized assistant `bash` code blocks in fullscreen TUI mode.
+
+### Fixed
+
+- Fixed compaction boundaries for oversized trailing tool results and repeated checkpoints so the latest summary is preserved exactly once.
+- Fixed concurrent manual compaction, failed-overflow retry state, extension-first local summaries, and exact `session_compact` entry identity.
+- Fixed `compaction.enabled: false` being bypassed by `before_model_call` compaction requests.
+- Fixed entering fullscreen mode invalidating the mounted component tree twice.
+- Fixed fullscreen bash-block copy actions to use Pi's platform clipboard backend instead of reporting success immediately after an OSC 52 write.
+
 ## [1.4.0] - 2026-10-21
 
 ### New Features
@@ -1427,6 +1443,7 @@
 
 ### Fixed
 
+- Hardened persisted session storage so default and custom session directories use private `0700` permissions, session files use `0600` across create/resume/migration/fork/branch flows, and symlink or path-type swaps are refused.
 - Fixed inherited OpenRouter model context windows to use the top provider's actual context length ([#6481](https://github.com/earendil-works/pi-mono/pull/6481) by [@davidbrai](https://github.com/davidbrai)).
 - Fixed inherited OpenRouter OpenAI-compatible session IDs to use the `x-session-id` header instead of OpenAI-specific session-affinity fields ([#6496](https://github.com/earendil-works/pi-mono/pull/6496) by [@petrroll](https://github.com/petrroll)).
 - Fixed `Ctrl+V` to paste clipboard text when the pasteboard does not contain an image.

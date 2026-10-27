@@ -14,7 +14,7 @@ import {
 	setCapabilities,
 	setCellDimensions,
 } from "../src/terminal-image.ts";
-import { type Component, CURSOR_MARKER, renderFakeCursor, type TUI } from "../src/tui.ts";
+import { type Component, Container, CURSOR_MARKER, renderFakeCursor, type TUI } from "../src/tui.ts";
 import { TuiMainScreen } from "../src/tui-main-screen.ts";
 import { sliceByColumn } from "../src/utils.ts";
 import { VirtualTerminal } from "./virtual-terminal.ts";
@@ -510,9 +510,9 @@ describe("TUI Kitty image cleanup", () => {
 });
 
 describe("TUI resize handling", () => {
-	it("triggers full re-render when terminal height changes", async () => {
+	it("repaints and bottom-anchors short content when terminal height changes", async () => {
 		await withEnv({ TERMUX_VERSION: undefined }, async () => {
-			const terminal = new VirtualTerminal(40, 10);
+			const terminal = new LoggingVirtualTerminal(40, 10);
 			const tui: TUI = new TuiMainScreen(terminal);
 			const component = new TestComponent();
 			tui.addChild(component);
@@ -522,6 +522,7 @@ describe("TUI resize handling", () => {
 			await terminal.waitForRender();
 
 			const initialRedraws = tui.fullRedraws;
+			terminal.clearWrites();
 
 			// Resize height
 			terminal.resize(40, 15);
@@ -531,8 +532,58 @@ describe("TUI resize handling", () => {
 			assert.ok(tui.fullRedraws > initialRedraws, "Height change should trigger full redraw");
 
 			const viewport = terminal.getViewport();
-			assert.ok(viewport[0]?.includes("Line 0"), "Content preserved after height change");
+			assert.deepStrictEqual(viewport.slice(-3), ["Line 0", "Line 1", "Line 2"]);
+			assert.ok(!terminal.getWrites().includes("\x1b[3J"), "Resize repaint should preserve scrollback");
 
+			tui.stop();
+		});
+	});
+
+	it("replays a provider-selected suffix without clearing scrollback", async () => {
+		await withEnv({ TERMUX_VERSION: undefined }, async () => {
+			const terminal = new LoggingVirtualTerminal(30, 5);
+			const tui = new TuiMainScreen(terminal);
+			const component = new TestComponent();
+			tui.addChild(component);
+			component.lines = Array.from({ length: 20 }, (_, index) => `Line ${index}`);
+			tui.setResizeRedrawProvider((context) => {
+				assert.strictEqual(context.lines.length, 20);
+				assert.strictEqual(context.hasOverlays, false);
+				return 10;
+			});
+
+			tui.start();
+			await terminal.waitForRender();
+			terminal.clearWrites();
+			terminal.resize(30, 6);
+			await terminal.waitForRender();
+
+			const writes = terminal.getWrites();
+			assert.ok(writes.includes("Line 10"), "Provider-selected suffix should be replayed");
+			assert.ok(!writes.includes("\x1b[3J"), "Suffix repaint should preserve existing scrollback");
+			assert.ok(terminal.getViewport().at(-1)?.includes("Line 19"), "Logical bottom should stay visible");
+			tui.stop();
+		});
+	});
+
+	it("continues differential rendering after bottom-anchoring a short buffer", async () => {
+		await withEnv({ TERMUX_VERSION: undefined }, async () => {
+			const terminal = new VirtualTerminal(30, 5);
+			const tui = new TuiMainScreen(terminal);
+			const component = new TestComponent();
+			tui.addChild(component);
+			component.lines = ["Line 0", "Line 1"];
+
+			tui.start();
+			await terminal.waitForRender();
+			terminal.resize(30, 8);
+			await terminal.waitForRender();
+
+			component.lines.push("Line 2");
+			tui.requestRender();
+			await terminal.waitForRender();
+
+			assert.deepStrictEqual(terminal.getViewport().slice(-3), ["Line 0", "Line 1", "Line 2"]);
 			tui.stop();
 		});
 	});
@@ -671,6 +722,120 @@ describe("TUI content shrinkage", () => {
 });
 
 describe("TUI differential rendering", () => {
+	it("reuses a stable transcript prefix when only the editor changes", async () => {
+		const terminal = new VirtualTerminal(40, 10);
+		const tui = new TuiMainScreen(terminal);
+		const chat = new TestComponent();
+		const editor = new TestComponent();
+		const chatContainer = new Container();
+		const editorContainer = new Container();
+		chatContainer.addChild(chat);
+		editorContainer.addChild(editor);
+		tui.addChild(chatContainer);
+		tui.addChild(editorContainer);
+
+		chat.lines = Array.from({ length: 20 }, (_, index) => `Chat ${index}`);
+		editor.lines = ["Editor before"];
+		const internal = tui as unknown as {
+			applyLineResets(lines: string[], start?: number): string[];
+		};
+		const applyLineResets = internal.applyLineResets.bind(tui);
+		let normalizedFrom = -1;
+		internal.applyLineResets = (lines, start = 0) => {
+			normalizedFrom = start;
+			return applyLineResets(lines, start);
+		};
+
+		tui.start();
+		await terminal.waitForRender();
+		const firstChatRender = chatContainer.render(40);
+		assert.strictEqual(
+			chatContainer.render(40),
+			firstChatRender,
+			"stable containers should preserve line-array identity",
+		);
+
+		editor.lines = ["Editor after"];
+		tui.requestRender();
+		await terminal.waitForRender();
+
+		assert.strictEqual(normalizedFrom, chat.lines.length, "normalization should skip the stable transcript prefix");
+		assert.ok(
+			terminal.getViewport().at(-1)?.includes("Editor after"),
+			"the changed editor suffix should still render",
+		);
+		tui.stop();
+	});
+
+	it("retains a cursor marker inside a reused prefix", async () => {
+		const terminal = new VirtualTerminal(40, 10);
+		const tui = new TuiMainScreen(terminal);
+		const chat = new TestComponent();
+		const editor = new TestComponent();
+		const footer = new TestComponent();
+		const chatContainer = new Container();
+		const editorContainer = new Container();
+		chatContainer.addChild(chat);
+		editorContainer.addChild(editor);
+		tui.addChild(chatContainer);
+		tui.addChild(editorContainer);
+		tui.addChild(footer);
+
+		chat.lines = ["Chat"];
+		editor.lines = [`Editor${CURSOR_MARKER}`];
+		footer.lines = ["Footer before"];
+		tui.start();
+		await terminal.waitForRender();
+		const internal = tui as unknown as {
+			previousCursorPosition: { row: number; col: number } | null;
+		};
+		const initialCursor = internal.previousCursorPosition;
+		assert.deepStrictEqual(initialCursor, { row: 1, col: 6 });
+
+		footer.lines = ["Footer after"];
+		tui.requestRender();
+		await terminal.waitForRender();
+
+		assert.deepStrictEqual(internal.previousCursorPosition, initialCursor);
+		tui.stop();
+	});
+
+	it("re-resolves fake cursors in a reused prefix when the hardware cursor setting changes", async () => {
+		const terminal = new LoggingVirtualTerminal(40, 10);
+		const tui = new TuiMainScreen(terminal);
+		const chat = new TestComponent();
+		const editor = new TestComponent();
+		const chatContainer = new Container();
+		const editorContainer = new Container();
+		chatContainer.addChild(chat);
+		editorContainer.addChild(editor);
+		tui.addChild(chatContainer);
+		tui.addChild(editorContainer);
+
+		chat.lines = [`Chat${CURSOR_MARKER}${renderFakeCursor("X")}`];
+		editor.lines = ["Editor before"];
+		tui.start();
+		await terminal.waitForRender();
+		assert.ok(terminal.getWrites().includes("Chat\x1b[7mX\x1b[27m"));
+
+		terminal.clearWrites();
+		tui.setShowHardwareCursor(true);
+		editor.lines = ["Editor after"];
+		tui.requestRender();
+		await terminal.waitForRender();
+
+		// The transcript prefix is unchanged, but its resolved fake cursor is not: the
+		// focused fake cursor is dropped while the hardware cursor is shown. A stale
+		// prefix would keep the reverse-video cursor on screen without a repaint.
+		const internal = tui as unknown as { previousLines: string[] };
+		assert.ok(internal.previousLines[0]?.includes("ChatX"), "the chat line is unchanged");
+		assert.ok(
+			!internal.previousLines[0]?.includes("\x1b[7m"),
+			"the reused prefix must resolve its fake cursor again",
+		);
+		tui.stop();
+	});
+
 	it("tracks cursor correctly when content shrinks with unchanged remaining lines", async () => {
 		const terminal = new VirtualTerminal(40, 10);
 		const tui: TUI = new TuiMainScreen(terminal);

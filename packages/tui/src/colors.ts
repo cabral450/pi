@@ -22,7 +22,7 @@ export interface OklchColorValue {
 
 /** A concrete color. Every color can be converted to sRGB, so color math never fails. */
 export type Color = IndexedColor | RgbColorValue | OklchColorValue;
-export type TerminalColorMode = "256color" | "truecolor";
+export type TerminalColorMode = "ansi16" | "256color" | "truecolor";
 export type ColorMixSpace = "oklch" | "srgb";
 
 export interface OklchChannels {
@@ -296,7 +296,29 @@ function rgbToAnsi256(color: RgbColor): number {
 	return cubeIndex;
 }
 
+function rgbToAnsi16(color: RgbColor): number {
+	let closestIndex = 0;
+	let closestDistance = Infinity;
+	for (let index = 0; index < 16; index++) {
+		const distance = colorDistance(color, indexedToRgb(index));
+		if (distance < closestDistance) {
+			closestIndex = index;
+			closestDistance = distance;
+		}
+	}
+	return closestIndex;
+}
+
+function ansi16Sequence(index: number, background: boolean): string {
+	const base = background ? (index < 8 ? 40 : 100) : index < 8 ? 30 : 90;
+	return `\x1b[${base + (index % 8)}m`;
+}
+
 function colorAnsi(color: Color, mode: TerminalColorMode, background: boolean): string {
+	if (mode === "ansi16") {
+		const index = color.kind === "indexed" && color.index < 16 ? color.index : rgbToAnsi16(colorToRgb(color));
+		return ansi16Sequence(index, background);
+	}
 	if (color.kind === "indexed") return `\x1b[${background ? 48 : 38};5;${color.index}m`;
 
 	const rgb = colorToRgb(color);

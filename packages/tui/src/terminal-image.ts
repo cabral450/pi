@@ -77,13 +77,20 @@ function detectCapabilitiesFromEnvironment(tmuxForwardsHyperlink: () => boolean)
 
 	// Emit OSC 8 hyperlinks only when tmux confirms it forwards.
 	// Image protocols are unreliable under tmux, so leave `images: null`.
+	// Multiplexers can inherit COLORTERM=truecolor from the outer terminal, so trust it there only
+	// when TERM shows the multiplexer itself is configured for more than basic colors.
+	const multiplexerTrueColor =
+		term.includes("direct") ||
+		term.includes("truecolor") ||
+		term.includes("24bit") ||
+		(hasTrueColorHint && term.includes("256color"));
 	if (process.env.TMUX || term.startsWith("tmux")) {
-		return { images: null, trueColor: hasTrueColorHint, hyperlinks: tmuxForwardsHyperlink() };
+		return { images: null, trueColor: multiplexerTrueColor, hyperlinks: tmuxForwardsHyperlink() };
 	}
 
 	// screen does not forward OSC 8 hyperlinks, so keep them off there.
 	if (term.startsWith("screen")) {
-		return { images: null, trueColor: hasTrueColorHint, hyperlinks: false };
+		return { images: null, trueColor: multiplexerTrueColor, hyperlinks: false };
 	}
 
 	// Herdr forwards OSC 8 hyperlinks and supports the Kitty graphics protocol. Check it before
@@ -181,8 +188,23 @@ export function getCapabilities(): TerminalCapabilities {
 	return cachedCapabilities;
 }
 
+function parseColorModeOverride(value: string | undefined): TerminalColorMode | undefined {
+	const mode = value?.toLowerCase();
+	if (mode === "truecolor" || mode === "24bit" || mode === "24-bit" || mode === "16m") return "truecolor";
+	if (mode === "256color" || mode === "256" || mode === "8bit" || mode === "8-bit") return "256color";
+	if (mode === "ansi16" || mode === "16color" || mode === "16-color" || mode === "ansi") return "ansi16";
+	return undefined;
+}
+
 export function getTerminalColorMode(capabilities: TerminalCapabilities = getCapabilities()): TerminalColorMode {
-	return capabilities.trueColor ? "truecolor" : "256color";
+	const forced = parseColorModeOverride(process.env.PI_COLOR_MODE);
+	if (forced) return forced;
+	if (capabilities.trueColor) return "truecolor";
+	const term = process.env.TERM?.toLowerCase() ?? "";
+	if (term === "dumb" || term === "linux") return "ansi16";
+	const inMultiplexer =
+		Boolean(process.env.TMUX || process.env.STY) || term.startsWith("tmux") || term.startsWith("screen");
+	return inMultiplexer && !term.includes("256color") ? "ansi16" : "256color";
 }
 
 export function resetCapabilitiesCache(): void {

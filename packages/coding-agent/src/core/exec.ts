@@ -23,7 +23,9 @@ export interface ExecOptions {
 export interface ExecResult {
 	stdout: string;
 	stderr: string;
+	/** Exit code, or 1 when the process terminates without a numeric exit code. */
 	code: number;
+	/** True when aborted, timed out, or terminated by a signal. */
 	killed: boolean;
 }
 
@@ -94,7 +96,7 @@ export async function execCommand(
 				if (options?.signal) {
 					options.signal.removeEventListener("abort", killProcess);
 				}
-				resolve({ stdout, stderr, code: code ?? 0, killed });
+				resolve({ stdout, stderr, code: code ?? 1, killed: killed || proc.signalCode !== null });
 			})
 			.catch((_err) => {
 				if (timeoutId) clearTimeout(timeoutId);

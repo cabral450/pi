@@ -26,6 +26,7 @@ import type {
 	MarkdownTheme,
 	OverlayHandle,
 	OverlayOptions,
+	ResizeRedrawContext,
 	SlashCommand,
 	TuiMainScreenRenderState,
 } from "@earendil-works/pi-tui";
@@ -108,6 +109,8 @@ import { RADIUS_MCP_URL, RADIUS_PROVIDER_ID } from "../../core/radius.ts";
 import type { ResourceDiagnostic } from "../../core/resource-loader.ts";
 import { formatMissingSessionCwdPrompt, MissingSessionCwdError } from "../../core/session-cwd.ts";
 import {
+	type FileEntry,
+	loadEntriesFromFile,
 	type SessionEntry,
 	SessionManager,
 	sessionEntryToContextMessages,
@@ -627,6 +630,7 @@ export class InteractiveMode {
 			logDirectory: getAgentDir(),
 			terminal: options.terminal,
 			onRightClickPaste: this.onRightClickPaste,
+			resizeRedrawProvider: (context) => this.getIdleLatestAssistantResizeRedrawStart(context),
 			fullscreenCopyOnSelect: this.settingsManager.getFullscreenCopyOnSelect(),
 			fullscreenWheelScrollLines: this.settingsManager.getFullscreenWheelScrollLines(),
 		});
@@ -915,6 +919,7 @@ export class InteractiveMode {
 			logDirectory: getAgentDir(),
 			terminal,
 			onRightClickPaste: this.onRightClickPaste,
+			resizeRedrawProvider: (context) => this.getIdleLatestAssistantResizeRedrawStart(context),
 			fullscreenCopyOnSelect: this.settingsManager.getFullscreenCopyOnSelect(),
 			fullscreenWheelScrollLines: this.settingsManager.getFullscreenWheelScrollLines(),
 		});
@@ -926,7 +931,10 @@ export class InteractiveMode {
 		this.renderer = nextUi;
 		this.options.tuiMode = mode;
 		this.mountInteractiveTui(nextUi, components);
-		nextUi.invalidate();
+		// TuiAltScreen owns invalidation in beforeTerminalStart(). Avoid doing
+		// the same work twice when entering fullscreen, while still invalidating
+		// regular renderers and renderers that are intentionally not started.
+		if (!startRenderer || !TuiLayouts.isViewportTUI(nextUi)) nextUi.invalidate();
 		nextUi.setFocus(focus);
 		if (!startRenderer) return true;
 		nextUi.start();
@@ -2012,7 +2020,7 @@ export class InteractiveMode {
 					}
 
 					this.chatContainer.clear();
-					this.renderInitialMessages();
+					this.renderInitialMessages({ preservePromptHistory: true });
 					if (result.editorText && !this.editor.getText().trim()) {
 						this.editor.setText(result.editorText);
 					}
@@ -2045,6 +2053,64 @@ export class InteractiveMode {
 		this.setupExtensionShortcuts(extensionRunner);
 		this.showLoadedResources({ force: false, showDiagnosticsWhenQuiet: true });
 		this.showStartupNoticesIfNeeded();
+	}
+
+	private isActivelyOutputtingForResizeRedraw(): boolean {
+		return Boolean(
+			this.session.isStreaming ||
+				this.session.isBashRunning ||
+				this.session.isCompacting ||
+				this.activeStatusIndicator ||
+				this.pendingTools.size > 0,
+		);
+	}
+
+	private countRenderedLinesForResize(component: Component, width: number): number {
+		return component.render(width).length;
+	}
+
+	private getIdleLatestAssistantResizeRedrawStart(context: ResizeRedrawContext): number | undefined {
+		if (context.hasOverlays || this.isActivelyOutputtingForResizeRedraw()) return undefined;
+
+		const chatChildren = this.chatContainer.children;
+		let assistantIndex = -1;
+		for (let i = chatChildren.length - 1; i >= 0; i--) {
+			const child = chatChildren[i];
+			if (child instanceof AssistantMessageComponent && child.hasVisibleAnswer()) {
+				assistantIndex = i;
+				break;
+			}
+		}
+		if (assistantIndex < 0) return undefined;
+
+		let start = 0;
+		let foundDocument = false;
+		for (const child of this.renderer.children) {
+			if (child === this.documentContainer) {
+				foundDocument = true;
+				break;
+			}
+			start += this.countRenderedLinesForResize(child, context.width);
+		}
+		if (!foundDocument) return undefined;
+
+		let foundChat = false;
+		for (const child of this.documentContainer.children) {
+			if (child === this.chatContainer) {
+				foundChat = true;
+				break;
+			}
+			start += this.countRenderedLinesForResize(child, context.width);
+		}
+		if (!foundChat) return undefined;
+
+		for (let i = 0; i < assistantIndex; i++) {
+			start += this.countRenderedLinesForResize(chatChildren[i]!, context.width);
+		}
+
+		// If the latest answer plus prompt/footer already fits, the normal viewport
+		// repaint already contains the whole answer and keeps more surrounding context.
+		return context.lines.length - start <= context.height ? undefined : start;
 	}
 
 	private applyFullscreenScrollbarSetting(): void {
@@ -2217,7 +2283,7 @@ export class InteractiveMode {
 		this.streamingComponent = undefined;
 		this.streamingMessage = undefined;
 		this.pendingTools.clear();
-		this.renderInitialMessages();
+		this.renderInitialMessages({ preservePromptHistory: true });
 	}
 
 	/**
@@ -2266,6 +2332,7 @@ export class InteractiveMode {
 				this.shutdownRequested = true;
 			},
 			getContextUsage: () => this.session.getContextUsage(),
+			getAutoCompactionEnabled: () => this.session.autoCompactionEnabled,
 			compact: (options) => {
 				void (async () => {
 					try {
@@ -2836,8 +2903,9 @@ export class InteractiveMode {
 	private setCustomEditorComponent(factory: EditorFactory | undefined): void {
 		this.editorComponentFactory = factory;
 
-		// Save text from current editor before switching
+		// Save text and prompt history from the current editor before switching.
 		const currentText = this.editor.getText();
+		const currentHistory = this.editor.getHistory?.();
 
 		this.disposeActiveSelector();
 		this.editorContainer.clear();
@@ -2850,8 +2918,11 @@ export class InteractiveMode {
 			newEditor.onSubmit = this.defaultEditor.onSubmit;
 			newEditor.onChange = this.defaultEditor.onChange;
 
-			// Copy text from previous editor
+			// Copy text and prompt history from the previous editor.
 			newEditor.setText(currentText);
+			if (currentHistory) {
+				newEditor.setHistory?.(currentHistory);
+			}
 
 			// Copy appearance settings if supported
 			if (newEditor.borderColor !== undefined) {
@@ -2893,8 +2964,11 @@ export class InteractiveMode {
 
 			this.editor = newEditor;
 		} else {
-			// Restore default editor with text from custom editor
+			// Restore the default editor with text and prompt history from the custom editor.
 			this.defaultEditor.setText(currentText);
+			if (currentHistory) {
+				this.defaultEditor.setHistory(currentHistory);
+			}
 			this.editor = this.defaultEditor;
 		}
 
@@ -3258,7 +3332,7 @@ export class InteractiveMode {
 				this.editor.setText("");
 				return;
 			}
-			if (text === "/new") {
+			if (text === "/new" || text === "/clear") {
 				this.editor.setText("");
 				await this.handleClearCommand();
 				return;
@@ -3294,7 +3368,7 @@ export class InteractiveMode {
 				this.editor.setText("");
 				return;
 			}
-			if (text === "/quit") {
+			if (text === "/quit" || text === "/exit") {
 				this.editor.setText("");
 				await this.shutdown();
 				return;
@@ -3662,13 +3736,9 @@ export class InteractiveMode {
 						this.showStatus("Auto-compaction cancelled");
 					}
 				} else if (event.result) {
-					const entries = this.sessionManager.buildContextEntries();
-					if (entries[0]?.type !== "compaction") {
-						throw new Error("Completed compaction is missing from the session context");
-					}
-					this.chatContainer.clear();
-					// The latest compaction is prepended for model context; append it below at its chronological position.
-					this.renderSessionEntries(entries.slice(1));
+					// Compaction changes model context, but it should not erase visible
+					// scrollback in the active TUI session.
+					this.rebuildEditorPromptHistoryFromBranch(undefined, { preserveCurrent: true });
 					this.addMessageToChat(
 						createCompactionSummaryMessage(
 							event.result.summary,
@@ -3768,6 +3838,103 @@ export class InteractiveMode {
 				? [{ type: "text", text: message.content }]
 				: message.content.filter((c: { type: string }) => c.type === "text");
 		return textBlocks.map((c) => (c as { text: string }).text).join("");
+	}
+
+	private getPromptHistoryTextFromEntry(entry: SessionEntry): string {
+		if (entry.type !== "message") {
+			return "";
+		}
+		const message = entry.message;
+		if (message.role === "user") {
+			return this.getUserMessageText(message);
+		}
+		if (message.role === "bashExecution" && message.command) {
+			return `${message.excludeFromContext ? "!!" : "!"}${message.command}`;
+		}
+		return "";
+	}
+
+	private getBranchEntriesFromLoadedEntries(entries: FileEntry[]): SessionEntry[] {
+		const allEntries = entries.filter((entry): entry is SessionEntry => entry.type !== "session");
+		const sessionEntries = allEntries.filter(
+			(entry) => typeof (entry as { id?: unknown }).id === "string" && entry.id.length > 0,
+		);
+		if (sessionEntries.length === 0) {
+			return allEntries;
+		}
+
+		const byId = new Map(sessionEntries.map((entry) => [entry.id, entry]));
+		const branchEntries: SessionEntry[] = [];
+		let current: SessionEntry | undefined = sessionEntries[sessionEntries.length - 1];
+		while (current) {
+			branchEntries.unshift(current);
+			current = current.parentId ? byId.get(current.parentId) : undefined;
+		}
+		return branchEntries;
+	}
+
+	private getPromptHistorySessionFiles(): string[] {
+		const currentSessionFile = this.sessionManager.getSessionFile();
+		try {
+			return fs
+				.readdirSync(this.sessionManager.getSessionDir())
+				.filter((file) => file.endsWith(".jsonl"))
+				.map((file) => path.join(this.sessionManager.getSessionDir(), file))
+				.filter((file) => !currentSessionFile || path.resolve(file) !== path.resolve(currentSessionFile))
+				.map((file) => ({ file, mtime: fs.statSync(file).mtimeMs }))
+				.sort((a, b) => a.mtime - b.mtime)
+				.map(({ file }) => file);
+		} catch {
+			return [];
+		}
+	}
+
+	private rememberPromptHistoryText(historyTexts: string[], text: string | undefined): void {
+		const trimmed = String(text ?? "").trim();
+		if (!trimmed) {
+			return;
+		}
+		const existingIndex = historyTexts.indexOf(trimmed);
+		if (existingIndex >= 0) {
+			historyTexts.splice(existingIndex, 1);
+		}
+		historyTexts.push(trimmed);
+		if (historyTexts.length > 100) {
+			historyTexts.splice(0, historyTexts.length - 100);
+		}
+	}
+
+	private addPromptHistoryTextsFromBranch(historyTexts: string[], branchEntries: SessionEntry[]): void {
+		for (const entry of branchEntries) {
+			this.rememberPromptHistoryText(historyTexts, this.getPromptHistoryTextFromEntry(entry));
+		}
+	}
+
+	private addPromptHistoryTextsFromRepoSessions(historyTexts: string[]): void {
+		for (const file of this.getPromptHistorySessionFiles()) {
+			const entries = loadEntriesFromFile(file);
+			if (entries.length === 0) {
+				continue;
+			}
+			this.addPromptHistoryTextsFromBranch(historyTexts, this.getBranchEntriesFromLoadedEntries(entries));
+		}
+	}
+
+	private rebuildEditorPromptHistoryFromBranch(
+		branchEntries: SessionEntry[] = this.sessionManager.getBranch(),
+		options: { preserveCurrent?: boolean } = {},
+	): void {
+		if (!this.editor.setHistory) {
+			return;
+		}
+		const previousHistory = options.preserveCurrent ? (this.editor.getHistory?.() ?? []) : [];
+		const historyTexts: string[] = [];
+		this.addPromptHistoryTextsFromRepoSessions(historyTexts);
+		this.addPromptHistoryTextsFromBranch(historyTexts, branchEntries);
+		for (const textContent of previousHistory.slice().reverse()) {
+			this.rememberPromptHistoryText(historyTexts, textContent);
+		}
+		this.editor.setHistory(historyTexts.slice().reverse());
 	}
 
 	/** Show a managed-tool status update in the chat. */
@@ -4174,11 +4341,14 @@ export class InteractiveMode {
 		this.chatContainer.addChild(new ThemedText(() => theme.fg("warning", `${label}: ${reBilled}`), 1, 0));
 	}
 
-	renderInitialMessages(): void {
-		const entries = this.sessionManager.buildContextEntries();
-		this.renderSessionEntries(entries, {
+	renderInitialMessages(options: { preservePromptHistory?: boolean } = {}): void {
+		// Render the full active branch for visible chat history. SessionManager
+		// still builds compacted context separately for model requests.
+		this.renderSessionEntries(this.sessionManager.getBranch(), {
 			updateFooter: true,
-			populateHistory: true,
+		});
+		this.rebuildEditorPromptHistoryFromBranch(undefined, {
+			preserveCurrent: Boolean(options.preservePromptHistory),
 		});
 		this.renderProjectTrustWarningIfNeeded();
 
@@ -4228,7 +4398,8 @@ export class InteractiveMode {
 
 	private rebuildChatFromMessages(): void {
 		this.chatContainer.clear();
-		this.renderSessionEntries(this.sessionManager.buildContextEntries());
+		this.renderSessionEntries(this.sessionManager.getBranch());
+		this.rebuildEditorPromptHistoryFromBranch(undefined, { preserveCurrent: true });
 	}
 
 	// =========================================================================
@@ -5636,7 +5807,7 @@ export class InteractiveMode {
 
 						// Update UI
 						this.chatContainer.clear();
-						this.renderInitialMessages();
+						this.renderInitialMessages({ preservePromptHistory: true });
 						if (result.editorText && !this.editor.getText().trim()) {
 							this.editor.setText(result.editorText);
 						}

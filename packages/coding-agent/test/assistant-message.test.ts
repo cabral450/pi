@@ -1,10 +1,17 @@
 import type { AssistantMessage } from "@earendil-works/pi-ai";
-import type { TuiMouseEvent } from "@earendil-works/pi-tui";
-import { describe, expect, test } from "vitest";
+import { TuiAltScreen, type TuiMouseEvent } from "@earendil-works/pi-tui";
+import { beforeEach, describe, expect, test, vi } from "vitest";
+import { VirtualTerminal } from "../../tui/test/virtual-terminal.ts";
 import { AssistantMessageComponent } from "../src/modes/interactive/components/assistant-message.ts";
 import { UserMessageComponent } from "../src/modes/interactive/components/user-message.ts";
 import { initTheme } from "../src/modes/interactive/theme/theme.ts";
 import { stripAnsi } from "../src/utils/ansi.ts";
+
+const clipboardMocks = vi.hoisted(() => ({
+	copyToClipboard: vi.fn<(text: string) => Promise<void>>(),
+}));
+
+vi.mock("../src/utils/clipboard.ts", () => clipboardMocks);
 
 const OSC133_ZONE_START = "\x1b]133;A\x07";
 const OSC133_ZONE_END = "\x1b]133;B\x07";
@@ -34,15 +41,22 @@ function createAssistantMessage(
 }
 
 describe("AssistantMessageComponent", () => {
-	test("adds OSC 133 zone markers to assistant messages without tool calls", () => {
+	beforeEach(() => {
+		clipboardMocks.copyToClipboard.mockReset();
+		clipboardMocks.copyToClipboard.mockResolvedValue(undefined);
+	});
+
+	test("does not add OSC 133 zone markers to assistant messages", () => {
 		initTheme("dark");
 
 		const component = new AssistantMessageComponent(createAssistantMessage([{ type: "text", text: "hello" }]));
 		const lines = component.render(40);
 
 		expect(lines).not.toHaveLength(0);
-		expect(lines[0]).toContain(OSC133_ZONE_START);
-		expect(lines[lines.length - 1].startsWith(OSC133_ZONE_END + OSC133_ZONE_FINAL)).toBe(true);
+		expect(lines.join("\n")).not.toContain(OSC133_ZONE_START);
+		expect(lines.join("\n")).not.toContain(OSC133_ZONE_END);
+		expect(lines.join("\n")).not.toContain(OSC133_ZONE_FINAL);
+		expect(component.hasVisibleAnswer()).toBe(true);
 	});
 
 	test("does not add OSC 133 zone markers when assistant message contains tool calls", () => {
@@ -59,6 +73,34 @@ describe("AssistantMessageComponent", () => {
 		expect(rendered.includes(OSC133_ZONE_START)).toBe(false);
 		expect(rendered.includes(OSC133_ZONE_END)).toBe(false);
 		expect(rendered.includes(OSC133_ZONE_FINAL)).toBe(false);
+	});
+
+	test("offers click-to-copy for finalized bash blocks only", async () => {
+		initTheme("dark");
+		const message = createAssistantMessage([{ type: "text", text: "```bash\necho hello\n```" }]);
+		const component = new AssistantMessageComponent(message);
+		const terminal = new VirtualTerminal(40, 6);
+		const tui = new TuiAltScreen(terminal);
+		tui.addChild(component);
+		tui.start();
+		try {
+			await terminal.waitForRender();
+			const viewport = terminal.getViewport();
+			const row = viewport.findIndex((line) => line.includes("╭ bash") && line.includes("copy"));
+			expect(row).toBeGreaterThanOrEqual(0);
+			const column = viewport[row].indexOf("copy");
+			terminal.sendInput(`\x1b[<0;${column + 1};${row + 1}M`);
+			terminal.sendInput(`\x1b[<0;${column + 1};${row + 1}m`);
+			await terminal.waitForRender();
+			expect(clipboardMocks.copyToClipboard).toHaveBeenCalledWith("echo hello");
+
+			component.updateContent(message, true);
+			tui.requestRender();
+			await terminal.waitForRender();
+			expect(terminal.getViewport().some((line) => line.includes("copy"))).toBe(false);
+		} finally {
+			tui.stop();
+		}
 	});
 
 	test("renders length stops with neutral truncation wording", () => {

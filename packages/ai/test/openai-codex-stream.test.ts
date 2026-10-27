@@ -436,6 +436,57 @@ describe("openai-codex streaming", () => {
 		expect(result.errorMessage).toBe("Codex SSE response headers timed out after 10ms");
 	});
 
+	it("records a safe nested cause code for SSE fetch failures", async () => {
+		const token = mockToken();
+		const cause = Object.assign(new Error("private network endpoint details"), { code: "ECONNRESET" });
+		const fetchError = new TypeError("fetch failed") as TypeError & { cause?: unknown };
+		fetchError.cause = cause;
+		vi.stubGlobal(
+			"fetch",
+			vi.fn(async () => {
+				throw fetchError;
+			}),
+		);
+
+		const model: Model<"openai-codex-responses"> = {
+			id: "gpt-5.1-codex",
+			name: "GPT-5.1 Codex",
+			api: "openai-codex-responses",
+			provider: "openai-codex",
+			baseUrl: "https://chatgpt.com/backend-api",
+			reasoning: true,
+			input: ["text"],
+			cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+			contextWindow: 400000,
+			maxTokens: 128000,
+		};
+		const context = normalizeContext({
+			systemPrompt: "You are a helpful assistant.",
+			messages: [{ role: "user", content: "Say hello", timestamp: Date.now() }],
+		});
+
+		const result = await streamOpenAICodexResponses(model, context, {
+			apiKey: token,
+			transport: "sse",
+		}).result();
+
+		expect(result.stopReason).toBe("error");
+		expect(result.errorMessage).toBe("fetch failed");
+		expect(result.diagnostics).toHaveLength(1);
+		expect(result.diagnostics?.[0]).toMatchObject({
+			type: "provider_transport_failure",
+			error: { name: "TypeError", message: "fetch failed", causeCode: "ECONNRESET" },
+			details: {
+				configuredTransport: "sse",
+				transport: "sse",
+				eventsEmitted: false,
+				phase: "before_response_headers",
+				attempt: 1,
+			},
+		});
+		expect(JSON.stringify(result.diagnostics)).not.toContain("private network endpoint details");
+	});
+
 	it("aborts SSE body reads after response headers arrive", async () => {
 		const token = mockToken();
 		const encoder = new TextEncoder();
@@ -1902,11 +1953,29 @@ describe("openai-codex streaming", () => {
 		});
 	});
 
-	it("errors when a websocket is idle after the stream started", async () => {
+	it("uses SSE on the next request when a websocket is idle after the stream started", async () => {
 		vi.useFakeTimers();
 		const token = mockToken();
+		const encoder = new TextEncoder();
+		const sse = buildSSEPayload({ status: "completed" });
+		const sessionId = "ws-idle-after-start";
+		let websocketConnections = 0;
 
-		const fetchMock = vi.fn(async () => new Response("unexpected fetch", { status: 500 }));
+		const fetchMock = vi.fn(async (input: string | URL) => {
+			const url = typeof input === "string" ? input : input.toString();
+			if (url !== "https://chatgpt.com/backend-api/codex/responses") {
+				throw new Error(`Unexpected URL: ${url}`);
+			}
+			return new Response(
+				new ReadableStream<Uint8Array>({
+					start(controller) {
+						controller.enqueue(encoder.encode(sse));
+						controller.close();
+					},
+				}),
+				{ status: 200, headers: { "content-type": "text/event-stream" } },
+			);
+		});
 		vi.stubGlobal("fetch", fetchMock);
 
 		class MockWebSocket {
@@ -1915,6 +1984,7 @@ describe("openai-codex streaming", () => {
 			private listeners = new Map<string, Set<(event: unknown) => void>>();
 
 			constructor(_url: string, _protocols?: string | string[] | { headers?: Record<string, string> }) {
+				websocketConnections++;
 				queueMicrotask(() => this.dispatch("open", {}));
 			}
 
@@ -1974,6 +2044,7 @@ describe("openai-codex streaming", () => {
 
 		const resultPromise = streamOpenAICodexResponses(model, context, {
 			apiKey: token,
+			sessionId,
 			transport: "auto",
 			timeoutMs: 50,
 		}).result();
@@ -1985,6 +2056,27 @@ describe("openai-codex streaming", () => {
 		expect(result.stopReason).toBe("error");
 		expect(result.errorMessage).toBe("WebSocket idle timeout after 50ms");
 		expect(fetchMock).not.toHaveBeenCalled();
+		expect(getOpenAICodexWebSocketDebugStats(sessionId)).toMatchObject({
+			websocketFailures: 1,
+			sseFallbacks: 0,
+			websocketFallbackActive: true,
+		});
+
+		const retry = await streamOpenAICodexResponses(model, context, {
+			apiKey: token,
+			sessionId,
+			transport: "auto",
+			timeoutMs: 50,
+		}).result();
+
+		expect(retry.content.find((content) => content.type === "text")?.text).toBe("Hello");
+		expect(websocketConnections).toBe(1);
+		expect(fetchMock).toHaveBeenCalledTimes(1);
+		expect(getOpenAICodexWebSocketDebugStats(sessionId)).toMatchObject({
+			websocketFailures: 1,
+			sseFallbacks: 1,
+			websocketFallbackActive: true,
+		});
 	});
 
 	it("opens a fresh cached websocket before the backend connection age limit", async () => {

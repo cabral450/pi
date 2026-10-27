@@ -31,6 +31,8 @@ import type {
 	BeforeAgentStartEvent,
 	BeforeAgentStartEventResult,
 	BeforeAgentStartUserEvent,
+	BeforeModelCallEvent,
+	BeforeModelCallEventResult,
 	BeforeProviderHeadersEvent,
 	BeforeProviderRequestEvent,
 	BoundaryContextPreview,
@@ -379,6 +381,7 @@ export class ExtensionRunner {
 	private abortFn: () => void = () => {};
 	private hasPendingMessagesFn: () => boolean = () => false;
 	private getContextUsageFn: () => ContextUsage | undefined = () => undefined;
+	private getAutoCompactionEnabledFn: () => boolean = () => true;
 	private compactFn: (options?: CompactOptions) => void = () => {};
 	private getSystemPromptFn: () => string = () => "";
 	private getSystemPromptOptionsFn: () => BuildSystemPromptOptions = () =>
@@ -453,6 +456,7 @@ export class ExtensionRunner {
 		this.hasPendingMessagesFn = contextActions.hasPendingMessages;
 		this.shutdownHandler = contextActions.shutdown;
 		this.getContextUsageFn = contextActions.getContextUsage;
+		this.getAutoCompactionEnabledFn = contextActions.getAutoCompactionEnabled;
 		this.compactFn = contextActions.compact;
 		this.getSystemPromptFn = contextActions.getSystemPrompt;
 		this.getSystemPromptOptionsFn =
@@ -950,6 +954,10 @@ export class ExtensionRunner {
 				runner.assertActive();
 				return runner.getContextUsageFn();
 			},
+			getAutoCompactionEnabled: () => {
+				runner.assertActive();
+				return runner.getAutoCompactionEnabledFn();
+			},
 			compact: (options) => {
 				runner.assertActive();
 				runner.compactFn(options);
@@ -1122,6 +1130,29 @@ export class ExtensionRunner {
 		}
 
 		return result as RunnerEmitResult<TEvent>;
+	}
+
+	async emitBeforeModelCall(event: BeforeModelCallEvent): Promise<BeforeModelCallEventResult | undefined> {
+		const ctx = this.createContext();
+		let compact = false;
+
+		for (const { ext, handlers } of snapshotEventHandlers(this.extensions, event.type)) {
+			for (const handler of handlers) {
+				try {
+					const handlerResult = (await handler(event, ctx)) as BeforeModelCallEventResult | undefined;
+					compact ||= handlerResult?.compact === true;
+				} catch (err) {
+					this.emitError({
+						extensionPath: ext.path,
+						event: event.type,
+						error: err instanceof Error ? err.message : String(err),
+						stack: err instanceof Error ? err.stack : undefined,
+					});
+				}
+			}
+		}
+
+		return compact ? { compact: true } : undefined;
 	}
 
 	/** Returns the event's own action unless a handler overrides it; the last override wins. */

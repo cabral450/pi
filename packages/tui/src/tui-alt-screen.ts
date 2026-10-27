@@ -19,6 +19,7 @@ import {
 } from "./layout.ts";
 import { getLayoutNode } from "./layout-node.ts";
 import type { Terminal } from "./terminal.ts";
+import { resolveTerminalCopyAction, setTerminalActionsEnabled, type TerminalCopyAction } from "./terminal-action.ts";
 import {
 	deleteAllKittyImages,
 	deleteAllKittyPlacements,
@@ -344,6 +345,8 @@ export class TuiAltScreen extends TuiBase implements ViewportTUI {
 	}
 
 	protected override beforeTerminalStart(): void {
+		setTerminalActionsEnabled(this, true);
+		this.invalidate();
 		this.stopSelectionAutoScroll();
 		this.selectionPressActive = false;
 		this.stopScrollbarHover();
@@ -386,6 +389,8 @@ export class TuiAltScreen extends TuiBase implements ViewportTUI {
 	}
 
 	protected override beforeTerminalStop(_options: TuiStopOptions): void {
+		setTerminalActionsEnabled(this, false);
+		this.invalidate();
 		this.closeSearch();
 		this.stopSelectionAutoScroll();
 		this.selectionPressActive = false;
@@ -1347,16 +1352,23 @@ export class TuiAltScreen extends TuiBase implements ViewportTUI {
 				this.selectionAnchor.col === point.col;
 			const clickedUrl = isClick ? this.pressedUrl : undefined;
 			this.pressedUrl = undefined;
-			if (clickedUrl && this.openUrl) {
-				this.selectionAnchor = undefined;
-				this.selectionFocus = undefined;
-				try {
-					this.openUrl(clickedUrl);
-				} catch {
-					// URL activation is best-effort.
+			if (clickedUrl) {
+				const copyAction = resolveTerminalCopyAction(clickedUrl);
+				if (copyAction || this.openUrl) {
+					this.selectionAnchor = undefined;
+					this.selectionFocus = undefined;
+					if (copyAction) {
+						this.executeCopyAction(copyAction);
+					} else {
+						try {
+							this.openUrl?.(clickedUrl);
+						} catch {
+							// URL activation is best-effort.
+						}
+					}
+					this.requestRender();
+					return;
 				}
-				this.requestRender();
-				return;
 			}
 			if (isClick) {
 				const clickEvent = this.createMouseEvent("click", event.button, event.x, event.y, {
@@ -1445,6 +1457,21 @@ export class TuiAltScreen extends TuiBase implements ViewportTUI {
 				: (getGraphemeCellRange(line, selection.end.col)?.end ?? Math.min(selection.end.col + 1, lineWidth));
 		}
 		return { start: Math.max(minColumn, start), end: Math.min(maxColumn, end) };
+	}
+
+	private executeCopyAction(action: TerminalCopyAction): void {
+		if (!action.copy) {
+			void this.copyTextToClipboard(action.text);
+			return;
+		}
+		void (async () => {
+			try {
+				await action.copy?.(action.text);
+				this.flash("Copied!");
+			} catch {
+				this.flash("Copy failed");
+			}
+		})();
 	}
 
 	private getActiveSelectionText(): string | undefined {

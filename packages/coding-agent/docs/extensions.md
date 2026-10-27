@@ -229,6 +229,8 @@ Handlers are awaited in stream order, so slow handlers delay stream consumption.
 
 `turn_end` and `agent_before_settle` are actionable boundaries. Their handlers can chain proposed `custom`, `custom_message`, `context_edit`, or `compaction` entries and return `continue: true` for one next model request. Guard continuation conditions because an unconditional continuation can loop. Use the exported event declarations for the complete validation and ordering contract.
 
+`before_model_call` fires after a completed tool batch when the agent would otherwise start another provider request. Returning `{ compact: true }` appends threshold compaction and rebuilds the next-turn context first; finalized tool results and queued steering/follow-up messages are preserved. Requests are ignored when `ctx.getAutoCompactionEnabled()` is false, which proactive extensions should check before asking.
+
 <a id="cache_warming_decision"></a>
 
 `cache_warming_decision` can override an idle prompt-cache refresh with `{ action: "warm" }` or `{ action: "stop" }`. The last handler that returns an action wins.

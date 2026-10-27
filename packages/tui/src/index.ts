@@ -168,6 +168,8 @@ export {
 	type OverlayMargin,
 	type OverlayOptions,
 	type OverlayUnfocusOptions,
+	type ResizeRedrawContext,
+	type ResizeRedrawProvider,
 	renderFakeCursor,
 	type SizeValue,
 	type TUI,

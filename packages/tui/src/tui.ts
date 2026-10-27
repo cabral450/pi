@@ -143,6 +143,19 @@ export interface Component {
 
 export type TuiInputListenerResult = { consume?: boolean; data?: string } | undefined;
 export type TuiInputListener = (data: string) => TuiInputListenerResult;
+
+export interface ResizeRedrawContext {
+	lines: readonly string[];
+	width: number;
+	height: number;
+	widthChanged: boolean;
+	heightChanged: boolean;
+	viewportTop: number;
+	hasOverlays: boolean;
+}
+
+export type ResizeRedrawProvider = (context: ResizeRedrawContext) => number | undefined;
+
 type PendingTerminalColorQuery = {
 	foreground?: RgbColor;
 	background?: RgbColor;
@@ -357,24 +370,33 @@ type OverlayFocusRestorePolicy = "clear" | "preserve";
  */
 export class Container implements Component {
 	children: Component[] = [];
+	private renderCache: { width: number; children: Component[]; childLines: string[][]; lines: string[] } | undefined;
 	private mouseLayout?: { width: number; children: Array<{ component: Component; height: number }> };
+
+	private clearRenderCache(): void {
+		this.renderCache = undefined;
+	}
 
 	addChild(component: Component): void {
 		this.children.push(component);
+		this.clearRenderCache();
 	}
 
 	removeChild(component: Component): void {
 		const index = this.children.indexOf(component);
 		if (index !== -1) {
 			this.children.splice(index, 1);
+			this.clearRenderCache();
 		}
 	}
 
 	clear(): void {
 		this.children = [];
+		this.clearRenderCache();
 	}
 
 	invalidate(): void {
+		this.clearRenderCache();
 		for (const child of this.children) {
 			child.invalidate?.();
 		}
@@ -403,16 +425,32 @@ export class Container implements Component {
 	}
 
 	render(width: number): string[] {
-		const lines: string[] = [];
-		const mouseChildren: Array<{ component: Component; height: number }> = [];
-		for (const child of this.children) {
-			const childLines = child.render(width);
-			mouseChildren.push({ component: child, height: childLines.length });
-			for (const line of childLines) {
-				lines.push(line);
-			}
+		const renderedChildren = this.children.map((child) => child.render(width));
+		this.mouseLayout = {
+			width,
+			children: this.children.map((component, index) => ({ component, height: renderedChildren[index]!.length })),
+		};
+		const cache = this.renderCache;
+		if (
+			cache?.width === width &&
+			cache.children.length === this.children.length &&
+			cache.children.every((child, index) => child === this.children[index]) &&
+			cache.childLines.every((previous, index) => {
+				const next = renderedChildren[index];
+				return (
+					previous === next ||
+					(previous.length === next.length && previous.every((line, lineIndex) => line === next[lineIndex]))
+				);
+			})
+		) {
+			return cache.lines;
 		}
-		this.mouseLayout = { width, children: mouseChildren };
+
+		const lines: string[] = [];
+		for (const childLines of renderedChildren) {
+			for (const line of childLines) lines.push(line);
+		}
+		this.renderCache = { width, children: [...this.children], childLines: renderedChildren, lines };
 		return lines;
 	}
 }
@@ -1447,9 +1485,9 @@ export abstract class TuiBase extends Container implements TUI {
 		return result;
 	}
 
-	protected applyLineResets(lines: string[]): string[] {
+	protected applyLineResets(lines: string[], start = 0): string[] {
 		const reset = SEGMENT_RESET;
-		for (let i = 0; i < lines.length; i++) {
+		for (let i = start; i < lines.length; i++) {
 			const line = lines[i];
 			if (!isImageLine(line)) {
 				lines[i] = normalizeTerminalOutput(line) + reset;

@@ -1,5 +1,15 @@
 # Changelog
 
+## [Unreleased]
+
+### Added
+
+- Added opt-in click-to-copy actions for fenced `bash` code blocks in the alternate-screen Markdown renderer.
+
+### Fixed
+
+- Fixed code-block copy actions to await an application clipboard callback before showing success, while retaining OSC 52 as the callback-free fallback.
+
 ## [1.4.0] - 2026-10-21
 
 ### Added

@@ -1,12 +1,14 @@
 import type { AssistantMessage } from "@earendil-works/pi-ai";
 import { Container, Markdown, type MarkdownTheme, MouseRegion, Spacer, Text } from "@earendil-works/pi-tui";
 import type { MarkdownTransformer } from "../../../core/extensions/types.ts";
+import { copyToClipboard } from "../../../utils/clipboard.ts";
 import { getMarkdownTheme, theme } from "../theme/theme.ts";
 import { createMarkdownTransform } from "./markdown-transform.ts";
 
-const OSC133_ZONE_START = "\x1b]133;A\x07";
-const OSC133_ZONE_END = "\x1b]133;B\x07";
-const OSC133_ZONE_FINAL = "\x1b]133;C\x07";
+// Disabled: some terminals misinterpret OSC 133 prompt markers as title changes.
+const OSC133_ZONE_START = "";
+const OSC133_ZONE_END = "";
+const OSC133_ZONE_FINAL = "";
 
 /**
  * Component that renders a complete assistant message
@@ -77,6 +79,10 @@ export class AssistantMessageComponent extends Container {
 		}
 	}
 
+	hasVisibleAnswer(): boolean {
+		return Boolean(this.lastMessage?.content.some((content) => content.type === "text" && content.text.trim()));
+	}
+
 	override render(width: number): string[] {
 		const lines = super.render(width);
 		if (this.hasToolCalls || lines.length === 0) {
@@ -113,6 +119,7 @@ export class AssistantMessageComponent extends Container {
 				this.contentContainer.addChild(
 					new Markdown(content.text.trim(), this.outputPad, 0, this.markdownTheme, undefined, {
 						transform: createMarkdownTransform("assistant", this.isStreaming, this.markdownTransformers),
+						codeBlockCopy: this.isStreaming ? false : copyToClipboard,
 					}),
 				);
 			} else if (content.type === "thinking") {

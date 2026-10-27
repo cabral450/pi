@@ -375,6 +375,24 @@ describe("ProcessTerminal Kitty keyboard protocol negotiation", () => {
 	});
 });
 
+describe("ProcessTerminal title handling", () => {
+	it("suppresses terminal title OSC writes", () => {
+		const previousWrite = process.stdout.write;
+		const writes: string[] = [];
+		try {
+			process.stdout.write = ((chunk: string | Uint8Array) => {
+				writes.push(String(chunk));
+				return true;
+			}) as typeof process.stdout.write;
+
+			new ProcessTerminal().setTitle("pi title");
+			assert.deepStrictEqual(writes, []);
+		} finally {
+			process.stdout.write = previousWrite;
+		}
+	});
+});
+
 describe("ProcessTerminal progress", () => {
 	it("writes a valid OSC 9;4 clear sequence", () => {
 		const terminal = new ProcessTerminal();

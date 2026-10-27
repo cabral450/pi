@@ -36,6 +36,8 @@ By default, `reserveTokens` is 16384 tokens (configurable in `~/.pi/agent/settin
 
 During a multi-turn agent run, Pi checks the canonical projected context after tools finish and their results are appended, before starting the next assistant response. If the threshold is crossed, Pi compacts during `prepareNextTurn`, then performs the existing catch-up steering poll before `turn_start`. It skips this between-turn check when the completed tool batch terminates the run and no queued message requires another response. Pi also checks before a new user prompt and performs final-attempt overflow recovery after the low-level run ends.
 
+Extensions can also request threshold compaction between tool turns by returning `{ compact: true }` from `before_model_call`. Pi waits for the current tool batch to finish, appends the compaction checkpoint, rebuilds the active context, and only then polls queued steering messages or starts the next provider request.
+
 A provider context-overflow error or an early final `stopReason: "length"` can select one compact-and-retry recovery attempt. Length responses with tool calls retain their synthetic failed tool results and follow the ordinary tool/queue scheduler rather than forcing the run to end.
 
 You can also trigger manually with `/compact [instructions]`, where optional instructions focus the summary.

@@ -1,6 +1,7 @@
 import { Marked, type Token, Tokenizer, type TokenizerExtension, type Tokens } from "marked";
 import markedCjkFriendly from "marked-cjk-friendly";
 import { renderLatex } from "../latex.ts";
+import { createTerminalCopyAction, type TerminalCopyAction, terminalActionsEnabled } from "../terminal-action.ts";
 import { getCapabilities, hyperlink, isImageLine } from "../terminal-image.ts";
 import type { Component } from "../tui.ts";
 import { applyBackgroundToLine, flattenLines, visibleWidth, wrapTextWithAnsi } from "../utils.ts";
@@ -248,6 +249,8 @@ export interface MarkdownOptions {
 	transform?: (markdown: string, availableWidth: number) => string;
 	/** Render supported LaTeX math expressions as Unicode text (default: true). */
 	renderLatex?: boolean;
+	/** Show a click-to-copy action on bash blocks; a callback replaces the OSC 52 fallback. */
+	codeBlockCopy?: boolean | ((text: string) => void | Promise<void>);
 }
 
 interface InlineStyleContext {
@@ -263,6 +266,7 @@ export class Markdown implements Component {
 	private theme: MarkdownTheme;
 	private options: MarkdownOptions;
 	private defaultStylePrefix?: string;
+	private codeBlockCopyActions = new Map<string, TerminalCopyAction>();
 
 	// Cache for rendered output
 	private cachedText?: string;
@@ -291,6 +295,7 @@ export class Markdown implements Component {
 
 	setText(text: string): void {
 		this.text = text;
+		this.codeBlockCopyActions.clear();
 		this.invalidate();
 	}
 
@@ -550,21 +555,48 @@ export class Markdown implements Component {
 			}
 
 			case "code": {
-				const indent = this.theme.codeBlockIndent ?? "  ";
-				lines.push(this.theme.codeBlockBorder(`\`\`\`${token.lang || ""}`));
-				if (this.theme.highlightCode) {
-					const highlightedLines = this.theme.highlightCode(token.text, token.lang);
-					for (const hlLine of highlightedLines) {
-						lines.push(`${indent}${hlLine}`);
-					}
-				} else {
-					// Split code by newlines and style each line
-					const codeLines = token.text.split("\n");
-					for (const codeLine of codeLines) {
-						lines.push(`${indent}${this.theme.codeBlock(codeLine)}`);
+				const borderWidth = Math.max(4, Math.min(width, 100));
+				const label = token.lang ? ` ${token.lang} ` : "";
+				let copyAction: TerminalCopyAction | undefined;
+				if (this.options.codeBlockCopy && terminalActionsEnabled() && token.lang?.trim().toLowerCase() === "bash") {
+					const key = `${token.lang}\0${token.text}`;
+					copyAction = this.codeBlockCopyActions.get(key);
+					if (!copyAction) {
+						copyAction = createTerminalCopyAction(
+							token.text,
+							typeof this.options.codeBlockCopy === "function" ? this.options.codeBlockCopy : undefined,
+						);
+						this.codeBlockCopyActions.set(key, copyAction);
 					}
 				}
-				lines.push(this.theme.codeBlockBorder("```"));
+				const copyLabelWidth = 6;
+				if (copyAction && borderWidth - 2 - visibleWidth(label) - copyLabelWidth < 1) {
+					copyAction = undefined;
+				}
+				const topRuleWidth = Math.max(1, borderWidth - 2 - visibleWidth(label) - (copyAction ? copyLabelWidth : 0));
+				if (copyAction) {
+					lines.push(
+						this.theme.codeBlockBorder(`╭${label}${"─".repeat(topRuleWidth)} `) +
+							hyperlink(this.theme.link(this.theme.underline("copy")), copyAction.url) +
+							this.theme.codeBlockBorder(" ╮"),
+					);
+				} else {
+					lines.push(this.theme.codeBlockBorder(`╭${label}${"─".repeat(topRuleWidth)}╮`));
+				}
+				const highlightedLines = this.theme.highlightCode
+					? this.theme.highlightCode(token.text, token.lang)
+					: token.text.split("\n").map((codeLine: string) => this.theme.codeBlock(codeLine));
+				const codeWidth = Math.max(1, borderWidth - 4);
+				for (const highlightedLine of highlightedLines) {
+					const wrappedCodeLines = wrapTextWithAnsi(highlightedLine || " ", codeWidth);
+					for (const wrappedCodeLine of wrappedCodeLines.length ? wrappedCodeLines : [""]) {
+						const padding = " ".repeat(Math.max(0, codeWidth - visibleWidth(wrappedCodeLine)));
+						lines.push(
+							this.theme.codeBlockBorder("│ ") + wrappedCodeLine + padding + this.theme.codeBlockBorder(" │"),
+						);
+					}
+				}
+				lines.push(this.theme.codeBlockBorder(`╰${"─".repeat(Math.max(1, borderWidth - 2))}╯`));
 				if (nextTokenType && nextTokenType !== "space") {
 					lines.push(""); // Add spacing after code blocks (unless space token follows)
 				}

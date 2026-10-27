@@ -188,7 +188,10 @@ export type PrepareRequest = (
 	signal?: AbortSignal,
 ) => AgentRequestUpdate | void | Promise<AgentRequestUpdate | undefined> | Promise<void>;
 
-export interface PrepareNextTurnContext extends AgentTurnContext {}
+export interface PrepareNextTurnContext extends AgentTurnContext {
+	/** Whether the completed tool batch requires another provider request before queued messages are considered. */
+	willContinue: boolean;
+}
 
 export interface AgentLoopConfig extends SimpleStreamOptions {
 	model: Model<any>;

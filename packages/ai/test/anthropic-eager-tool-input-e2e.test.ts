@@ -1,8 +1,9 @@
 import { Type } from "typebox";
 import { describe, expect, it } from "vitest";
-import { type BuiltinProvider, complete, getModels, getProviders } from "../src/compat.ts";
+import { complete, getModels, getProviders } from "../src/compat.ts";
 import { getEnvApiKey } from "../src/env-api-keys.ts";
-import type { Api, KnownProvider, Model, ProviderStreamOptions, Tool } from "../src/types.ts";
+import type { BuiltinProvider } from "../src/providers/all.ts";
+import type { Api, Model, ProviderStreamOptions, Tool } from "../src/types.ts";
 import { resolveApiKey } from "./oauth.ts";
 
 const githubCopilotToken = await resolveApiKey("github-copilot");
@@ -24,7 +25,7 @@ interface AnthropicEagerE2ECase {
 	apiKey: string | undefined;
 }
 
-function getE2EApiKey(provider: KnownProvider): string | undefined {
+function getE2EApiKey(provider: BuiltinProvider): string | undefined {
 	if (provider === "github-copilot") {
 		return githubCopilotToken;
 	}

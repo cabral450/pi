@@ -106,7 +106,7 @@ describe("InteractiveMode compaction events", () => {
 		);
 	});
 
-	test("renders retained entries and appends the latest summary cost at the bottom", async () => {
+	test("keeps visible scrollback and appends a synthetic compaction summary at the bottom", async () => {
 		const usage: Usage = {
 			input: 10,
 			output: 20,
@@ -114,26 +114,6 @@ describe("InteractiveMode compaction events", () => {
 			cacheWrite: 40,
 			totalTokens: 100,
 			cost: { input: 0.01, output: 0.02, cacheRead: 0.03, cacheWrite: 0.065, total: 0.125 },
-		};
-		const latestCompaction: SessionEntry = {
-			type: "compaction",
-			id: "latest",
-			parentId: "previous",
-			timestamp: "2025-01-02T00:00:00Z",
-			summary: "summary",
-			firstKeptEntryId: "kept",
-			tokensBefore: 123,
-			usage,
-		};
-		const previousCompaction: SessionEntry = {
-			type: "compaction",
-			id: "previous",
-			parentId: null,
-			timestamp: "2025-01-01T00:00:00Z",
-			summary: "previous summary",
-			firstKeptEntryId: "kept",
-			tokensBefore: 100,
-			usage,
 		};
 		const fakeThis = {
 			isInitialized: true,
@@ -144,8 +124,8 @@ describe("InteractiveMode compaction events", () => {
 			defaultEditor: {},
 			statusContainer: { clear: vi.fn() },
 			chatContainer: { clear: vi.fn() },
-			sessionManager: { buildContextEntries: vi.fn().mockReturnValue([latestCompaction, previousCompaction]) },
-			renderSessionEntries: vi.fn(),
+			rebuildChatFromMessages: vi.fn(),
+			rebuildEditorPromptHistoryFromBranch: vi.fn(),
 			addMessageToChat: vi.fn(),
 			addCompactionCostNotice: vi.fn(),
 			showError: vi.fn(),
@@ -180,8 +160,11 @@ describe("InteractiveMode compaction events", () => {
 			willRetry: false,
 		});
 
-		expect(fakeThis.chatContainer.clear).toHaveBeenCalledTimes(1);
-		expect(fakeThis.renderSessionEntries).toHaveBeenCalledWith([previousCompaction]);
+		expect(fakeThis.chatContainer.clear).not.toHaveBeenCalled();
+		expect(fakeThis.rebuildChatFromMessages).not.toHaveBeenCalled();
+		expect(fakeThis.rebuildEditorPromptHistoryFromBranch).toHaveBeenCalledWith(undefined, {
+			preserveCurrent: true,
+		});
 		expect(fakeThis.addMessageToChat).toHaveBeenCalledTimes(1);
 		expect(fakeThis.addMessageToChat).toHaveBeenCalledWith(
 			expect.objectContaining({

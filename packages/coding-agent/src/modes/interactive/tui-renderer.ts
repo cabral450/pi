@@ -1,4 +1,4 @@
-import type { Terminal, WheelScrollLines } from "@earendil-works/pi-tui";
+import type { ResizeRedrawProvider, Terminal, WheelScrollLines } from "@earendil-works/pi-tui";
 import { ProcessTerminal, type TUI, TuiAltScreen, TuiMainScreen } from "@earendil-works/pi-tui";
 import { copyToClipboard } from "../../utils/clipboard.ts";
 import { openBrowser } from "../../utils/open-browser.ts";
@@ -13,6 +13,7 @@ export interface InteractiveTuiOptions {
 	readonly onRightClickPaste?: () => void;
 	readonly fullscreenCopyOnSelect?: boolean;
 	readonly fullscreenWheelScrollLines?: WheelScrollLines;
+	readonly resizeRedrawProvider?: ResizeRedrawProvider;
 }
 
 /** Composition root shared by coding-agent presentations. */
@@ -46,7 +47,9 @@ export function createInteractiveTui(options: InteractiveTuiOptions): TuiMainScr
 			},
 		});
 	}
-	return new TuiMainScreen(terminal, options.showHardwareCursor, options.logDirectory);
+	const tui = new TuiMainScreen(terminal, options.showHardwareCursor, options.logDirectory);
+	tui.setResizeRedrawProvider(options.resizeRedrawProvider);
+	return tui;
 }
 
 /** Stable reference for components while InteractiveMode replaces the active renderer. */

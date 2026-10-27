@@ -470,10 +470,15 @@ export function findCutPoint(
 
 		// Check if we've exceeded the budget
 		if (accumulatedTokens >= keepRecentTokens) {
-			// Prefer the closest valid cut point at or after this entry. If trailing
-			// tool results exceed the budget by themselves, keep their preceding
-			// assistant tool call instead of falling back to the first message.
-			cutIndex = cutPoints.find((candidate) => candidate >= i) ?? cutPoints[cutPoints.length - 1];
+			// Keep the over-budget entry and everything after it. Tool results are
+			// not legal cut points, so move back to the assistant tool call that
+			// owns them rather than falling forward past the result.
+			for (let c = cutPoints.length - 1; c >= 0; c--) {
+				if (cutPoints[c] <= i) {
+					cutIndex = cutPoints[c];
+					break;
+				}
+			}
 			break;
 		}
 	}

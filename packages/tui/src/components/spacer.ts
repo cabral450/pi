@@ -5,24 +5,24 @@ import type { Component } from "../tui.ts";
  */
 export class Spacer implements Component {
 	private lines: number;
+	private cachedLines?: string[];
 
 	constructor(lines: number = 1) {
 		this.lines = lines;
 	}
 
 	setLines(lines: number): void {
+		if (this.lines === lines) return;
 		this.lines = lines;
+		this.cachedLines = undefined;
 	}
 
 	invalidate(): void {
-		// No cached state to invalidate currently
+		this.cachedLines = undefined;
 	}
 
 	render(_width: number): string[] {
-		const result: string[] = [];
-		for (let i = 0; i < this.lines; i++) {
-			result.push("");
-		}
-		return result;
+		if (!this.cachedLines) this.cachedLines = Array.from({ length: this.lines }, () => "");
+		return this.cachedLines;
 	}
 }

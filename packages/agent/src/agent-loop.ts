@@ -257,6 +257,7 @@ async function runLoop(
 					toolResults: [],
 					context: currentContext,
 					newMessages,
+					willContinue: false,
 				};
 				await config.finishTurn?.(lastCompletedTurn, signal);
 				await emit({ type: "turn_end", message, toolResults: [] });
@@ -291,6 +292,7 @@ async function runLoop(
 				toolResults,
 				context: currentContext,
 				newMessages,
+				willContinue: hasMoreToolCalls,
 			};
 			const decision = await config.finishTurn?.(lastCompletedTurn, signal);
 			await emit({ type: "turn_end", message, toolResults });

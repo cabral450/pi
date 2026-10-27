@@ -358,6 +358,8 @@ export interface ExtensionContext {
 	shutdown(): void;
 	/** Get current context usage for the active model. */
 	getContextUsage(): ContextUsage | undefined;
+	/** Whether automatic context compaction is enabled for this session. */
+	getAutoCompactionEnabled(): boolean;
 	/** Trigger compaction without awaiting completion. */
 	compact(options?: CompactOptions): void;
 	/** Get the current effective system prompt. */
@@ -1071,6 +1073,14 @@ export interface TurnEndEvent extends BoundaryState {
 	toolResultEntryIds: string[];
 }
 
+/** Fired after a tool turn when another provider request would otherwise start. */
+export interface BeforeModelCallEvent {
+	type: "before_model_call";
+	turnIndex: number;
+	message: AgentMessage;
+	toolResults: ToolResultMessage[];
+}
+
 /** Fired when a message starts (user, assistant, or toolResult) */
 export interface MessageStartEvent {
 	type: "message_start";
@@ -1423,6 +1433,7 @@ export type ExtensionEvent =
 	| UIPromptEndEvent
 	| TurnStartEvent
 	| TurnEndEvent
+	| BeforeModelCallEvent
 	| MessageStartEvent
 	| MessageUpdateEvent
 	| MessageEndEvent
@@ -1444,6 +1455,10 @@ export interface ContextEventResult {
 	messages?: AgentMessage[];
 }
 
+export interface BeforeModelCallEventResult {
+	/** Request threshold compaction before the next provider call. */
+	compact?: boolean;
+}
 export type TurnEndEventResult = BoundaryResult;
 export type AgentBeforeSettleEventResult = BoundaryResult;
 
@@ -1650,6 +1665,10 @@ export interface ExtensionAPI {
 	on(event: "ui_prompt_end", handler: ExtensionHandler<UIPromptEndEvent>): () => void;
 	on(event: "turn_start", handler: ExtensionHandler<TurnStartEvent>): () => void;
 	on(event: "turn_end", handler: ExtensionHandler<TurnEndEvent, TurnEndEventResult>): () => void;
+	on(
+		event: "before_model_call",
+		handler: ExtensionHandler<BeforeModelCallEvent, BeforeModelCallEventResult>,
+	): () => void;
 	on(event: "message_start", handler: ExtensionHandler<MessageStartEvent>): () => void;
 	on(event: "message_update", handler: ExtensionHandler<MessageUpdateEvent>): () => void;
 	on(event: "message_end", handler: ExtensionHandler<MessageEndEvent, MessageEndEventResult>): () => void;
@@ -2218,6 +2237,7 @@ export interface ExtensionContextActions {
 	hasPendingMessages: () => boolean;
 	shutdown: () => void;
 	getContextUsage: () => ContextUsage | undefined;
+	getAutoCompactionEnabled: () => boolean;
 	compact: (options?: CompactOptions) => void;
 	getSystemPrompt: () => string;
 	getSystemPromptOptions?: () => BuildSystemPromptOptions;
